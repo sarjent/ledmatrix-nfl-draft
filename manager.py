@@ -400,8 +400,9 @@ class NFLDraftPlugin(BasePlugin):
         """
         Create a single pick item image with logo, name, position, and pick number.
 
-        Layout: [LOGO] Player Name  POS  #PICK
-                (large logo)  (large font)  (small font)
+        Layout (two lines):
+            [LOGO] Player Name
+                   POS  #PICK  (School)
 
         Args:
             pick: Pick data dictionary
@@ -416,22 +417,25 @@ class NFLDraftPlugin(BasePlugin):
         logo = self._load_team_logo(team_abbr)
         logo_width = logo.width if logo else 0
 
-        # Player name (large font)
+        # Player name (large font) - top line
         player_name = pick.get("player_name", "TBD")
 
-        # Position text (small font)
-        position_text = ""
+        # Build detail line: POS  #PICK  (School)
+        detail_parts = []
+
+        # Position
         if self.show_position and pick.get("position"):
-            position_text = pick["position"]
+            detail_parts.append(pick["position"])
 
-        # College text (small font, optional)
-        college_text = ""
-        if self.show_college and pick.get("college"):
-            college_text = f"({pick['college']})"
-
-        # Pick number text (small font)
+        # Pick number
         pick_number = pick.get("pick_number", 0)
-        pick_text = f"#{pick_number}"
+        detail_parts.append(f"#{pick_number}")
+
+        # College (optional)
+        if self.show_college and pick.get("college"):
+            detail_parts.append(f"({pick['college']})")
+
+        detail_text = "  ".join(detail_parts)
 
         # Calculate text widths using temp draw context
         temp_img = Image.new('RGB', (1, 1))
@@ -439,34 +443,18 @@ class NFLDraftPlugin(BasePlugin):
 
         try:
             player_name_width = int(temp_draw.textlength(player_name, font=self.player_name_font))
-            position_width = int(temp_draw.textlength(position_text, font=self.detail_font)) if position_text else 0
-            college_width = int(temp_draw.textlength(college_text, font=self.detail_font)) if college_text else 0
-            pick_text_width = int(temp_draw.textlength(pick_text, font=self.detail_font))
+            detail_width = int(temp_draw.textlength(detail_text, font=self.detail_font))
         except Exception:
             # Fallback for older PIL versions
             player_bbox = temp_draw.textbbox((0, 0), player_name, font=self.player_name_font)
             player_name_width = player_bbox[2] - player_bbox[0]
-            if position_text:
-                pos_bbox = temp_draw.textbbox((0, 0), position_text, font=self.detail_font)
-                position_width = pos_bbox[2] - pos_bbox[0]
-            else:
-                position_width = 0
-            if college_text:
-                col_bbox = temp_draw.textbbox((0, 0), college_text, font=self.detail_font)
-                college_width = col_bbox[2] - col_bbox[0]
-            else:
-                college_width = 0
-            pick_bbox = temp_draw.textbbox((0, 0), pick_text, font=self.detail_font)
-            pick_text_width = pick_bbox[2] - pick_bbox[0]
+            detail_bbox = temp_draw.textbbox((0, 0), detail_text, font=self.detail_font)
+            detail_width = detail_bbox[2] - detail_bbox[0]
 
-        # Calculate total item width
+        # Calculate total item width (max of player name or detail line, plus logo)
         element_spacing = 6
-        total_width = logo_width + element_spacing + player_name_width
-        if position_text:
-            total_width += element_spacing + position_width
-        if college_text:
-            total_width += element_spacing + college_width
-        total_width += element_spacing + pick_text_width
+        text_width = max(player_name_width, detail_width)
+        total_width = logo_width + element_spacing + text_width
 
         # Create item image
         item_img = Image.new('RGB', (total_width, item_height), (0, 0, 0))
@@ -483,26 +471,23 @@ class NFLDraftPlugin(BasePlugin):
                 item_img.paste(logo, (current_x, logo_y))
             current_x += logo_width + element_spacing
 
-        # Draw player name (large font, vertically centered)
-        player_name_y = (item_height - self.player_name_font_size) // 2
-        draw.text((current_x, player_name_y), player_name, font=self.player_name_font, fill=self.player_color)
-        current_x += player_name_width + element_spacing
+        text_start_x = current_x
 
-        # Calculate vertical position for small text (detail font)
-        detail_y = (item_height - self.detail_font_size) // 2
+        # Calculate vertical positions for two-line layout
+        # Total text height = player name + small gap + detail line
+        line_gap = 2
+        total_text_height = self.player_name_font_size + line_gap + self.detail_font_size
 
-        # Draw position (small font)
-        if position_text:
-            draw.text((current_x, detail_y), position_text, font=self.detail_font, fill=self.player_color)
-            current_x += position_width + element_spacing
+        # Center the two lines vertically
+        top_y = (item_height - total_text_height) // 2
+        player_name_y = top_y
+        detail_y = top_y + self.player_name_font_size + line_gap
 
-        # Draw college (small font)
-        if college_text:
-            draw.text((current_x, detail_y), college_text, font=self.detail_font, fill=(180, 180, 180))
-            current_x += college_width + element_spacing
+        # Draw player name (large font, top line)
+        draw.text((text_start_x, player_name_y), player_name, font=self.player_name_font, fill=self.player_color)
 
-        # Draw pick number (small font, white)
-        draw.text((current_x, detail_y), pick_text, font=self.detail_font, fill=self.pick_color)
+        # Draw detail line (small font, bottom line)
+        draw.text((text_start_x, detail_y), detail_text, font=self.detail_font, fill=self.pick_color)
 
         return item_img
 
