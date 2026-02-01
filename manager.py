@@ -45,9 +45,10 @@ class NFLDraftPlugin(BasePlugin):
     """
 
     # ESPN API Endpoints
-    ESPN_DRAFT_BASE = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{year}/draft"
-    ESPN_DRAFT_STATUS = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{year}/draft/status"
-    ESPN_DRAFT_ROUNDS = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{year}/draft/rounds"
+    # Site API provides mock draft with team projections (pre-draft)
+    ESPN_DRAFT_SITE = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/draft"
+    # Core API provides detailed athlete data and actual draft results (post-draft)
+    ESPN_DRAFT_CORE = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{year}/draft"
     ESPN_DRAFT_ATHLETES = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{year}/draft/athletes"
 
     def __init__(self, plugin_id: str, config: Dict[str, Any],
@@ -174,18 +175,26 @@ class NFLDraftPlugin(BasePlugin):
             return now.year
         return now.year + 1
 
-    def _fetch_draft_status(self) -> Dict[str, Any]:
-        """Fetch draft status to determine if draft is live."""
-        url = self.ESPN_DRAFT_STATUS.format(year=self.draft_year)
-        cache_key = f"nfl_draft_status_{self.draft_year}"
+    def _fetch_draft_data(self) -> Dict[str, Any]:
+        """
+        Fetch draft data from ESPN site API.
 
-        # Short cache TTL for status checks during draft season
-        data = self.api_helper.get(url, cache_key=cache_key, cache_ttl=300)
+        This endpoint provides mock draft picks with team projections (pre-draft)
+        or actual draft results (post-draft).
+        """
+        cache_key = f"nfl_draft_site_{self.draft_year}"
+        cache_ttl = self.live_refresh_interval if self.is_draft_live else self.projection_refresh_interval
+
+        data = self.api_helper.get(
+            self.ESPN_DRAFT_SITE,
+            cache_key=cache_key,
+            cache_ttl=cache_ttl
+        )
         return data or {}
 
     def _fetch_draft_picks(self, round_num: Optional[int] = None) -> List[Dict[str, Any]]:
         """
-        Fetch draft picks from ESPN API.
+        Fetch draft picks from ESPN site API.
 
         Args:
             round_num: Specific round to fetch, or None for all configured rounds
@@ -195,44 +204,65 @@ class NFLDraftPlugin(BasePlugin):
         """
         picks = []
 
-        # Build URL
-        url = f"{self.ESPN_DRAFT_ATHLETES.format(year=self.draft_year)}?limit=500"
+        data = self._fetch_draft_data()
 
-        cache_key = f"nfl_draft_picks_{self.draft_year}_{round_num or 'all'}"
-        cache_ttl = self.live_refresh_interval if self.is_draft_live else self.projection_refresh_interval
+        if not data:
+            self.logger.warning("No draft data returned from ESPN API")
+            return picks
 
-        data = self.api_helper.get(url, cache_key=cache_key, cache_ttl=cache_ttl)
+        # Update draft status from the response
+        status = data.get("status", {})
+        if status:
+            state = status.get("state", "").lower()
+            if state == "in":
+                self.draft_status = "live"
+                self.is_draft_live = True
+            elif state == "post":
+                self.draft_status = "complete"
+            else:
+                self.draft_status = "pre"
 
-        if data and "items" in data:
-            for item in data.get("items", []):
-                # ESPN returns $ref links, need to resolve them
-                pick_data = self._resolve_pick_data(item)
-                if pick_data:
-                    # Filter by round if specified
-                    if round_num is None or pick_data.get("round") == round_num:
+            # Get current round from status
+            current_round = status.get("round", 1)
+            if isinstance(current_round, int):
+                self.current_round = current_round
+
+        # Parse picks from the response
+        raw_picks = data.get("picks", [])
+        self.logger.info(f"Found {len(raw_picks)} picks in ESPN response")
+
+        for item in raw_picks:
+            pick_data = self._parse_site_pick_data(item)
+            if pick_data:
+                # Filter by round if specified
+                pick_round = pick_data.get("round", 1)
+                if round_num is None or pick_round == round_num:
+                    # Also filter by configured rounds
+                    if pick_round in self.rounds_to_display:
                         picks.append(pick_data)
 
         return picks
 
-    def _resolve_pick_data(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Resolve ESPN $ref links to get full pick data."""
-        if "$ref" in item:
-            # Fetch the referenced data
-            ref_url = item["$ref"]
-            cache_key = f"nfl_draft_ref_{hash(ref_url)}"
-            data = self.api_helper.get(ref_url, cache_key=cache_key, cache_ttl=3600)
-            if data:
-                return self._parse_pick_data(data)
-        elif "athlete" in item or "pickNumber" in item:
-            return self._parse_pick_data(item)
-        return None
+    def _parse_site_pick_data(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Parse ESPN site API pick data into standardized format.
 
-    def _parse_pick_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse ESPN pick data into standardized format."""
+        Site API structure:
+        {
+            "pick": 1,
+            "overall": 1,
+            "round": 1,
+            "team": {"id": "13", "abbreviation": "LV", "displayName": "Las Vegas Raiders"},
+            "athlete": {"displayName": "...", "position": {"abbreviation": "QB"}, "college": {...}}
+        }
+        """
+        if not data:
+            return None
+
         pick = {
-            "pick_number": data.get("pickNumber", data.get("overall", 0)),
+            "pick_number": data.get("overall", data.get("pick", 0)),
             "round": data.get("round", 1),
-            "round_pick": data.get("roundPickNumber", 0),
+            "round_pick": data.get("pick", 0),
             "player_name": "TBD",
             "position": "",
             "college": "",
@@ -240,56 +270,34 @@ class NFLDraftPlugin(BasePlugin):
             "team_name": ""
         }
 
-        # Extract athlete info
+        # Extract team info (NFL team that has the pick)
+        team = data.get("team", {})
+        if isinstance(team, dict):
+            pick["team_abbr"] = team.get("abbreviation", "")
+            pick["team_name"] = team.get("displayName", team.get("name", ""))
+
+        # Extract athlete info (projected/drafted player)
         athlete = data.get("athlete", {})
         if isinstance(athlete, dict):
             pick["player_name"] = athlete.get("displayName", athlete.get("fullName", "TBD"))
 
+            # Position
             position = athlete.get("position", {})
             if isinstance(position, dict):
-                pick["position"] = position.get("abbreviation", "")
+                pick["position"] = position.get("abbreviation", position.get("name", ""))
             elif isinstance(position, str):
                 pick["position"] = position
 
-            # College info
+            # College
             college = athlete.get("college", {})
             if isinstance(college, dict):
                 pick["college"] = college.get("name", college.get("shortName", ""))
             elif isinstance(college, str):
                 pick["college"] = college
 
-        # Handle $ref for athlete
-        if isinstance(athlete, dict) and "$ref" in athlete:
-            athlete_data = self.api_helper.get(
-                athlete["$ref"],
-                cache_key=f"nfl_draft_athlete_{hash(athlete['$ref'])}",
-                cache_ttl=86400
-            )
-            if athlete_data:
-                pick["player_name"] = athlete_data.get("displayName", athlete_data.get("fullName", "TBD"))
-                position = athlete_data.get("position", {})
-                if isinstance(position, dict):
-                    pick["position"] = position.get("abbreviation", "")
-                college = athlete_data.get("college", {})
-                if isinstance(college, dict):
-                    pick["college"] = college.get("name", "")
-
-        # Extract team info
-        team = data.get("team", {})
-        if isinstance(team, dict):
-            pick["team_abbr"] = team.get("abbreviation", "")
-            pick["team_name"] = team.get("displayName", "")
-
-            # Handle $ref for team
-            if "$ref" in team:
-                team_data = self.api_helper.get(
-                    team["$ref"],
-                    cache_key=f"nfl_draft_team_{hash(team['$ref'])}",
-                    cache_ttl=86400
-                )
-                if team_data:
-                    pick["team_abbr"] = team_data.get("abbreviation", "")
-                    pick["team_name"] = team_data.get("displayName", "")
+        # Skip picks without player info (unless we want to show "TBD")
+        if pick["player_name"] == "TBD" and not pick["team_abbr"]:
+            return None
 
         return pick
 
@@ -297,27 +305,28 @@ class NFLDraftPlugin(BasePlugin):
         """
         Check if the NFL Draft is currently live.
 
+        Uses the site API status field which is updated in _fetch_draft_picks.
+        Falls back to date-based detection.
+
         Returns:
             True if draft is live, False otherwise
         """
-        status_data = self._fetch_draft_status()
+        # First try to get status from site API
+        data = self._fetch_draft_data()
 
-        if status_data:
-            status = status_data.get("type", {})
-            if isinstance(status, dict):
-                status_name = status.get("name", "").lower()
-            else:
-                status_name = str(status).lower()
-
-            if status_name in ["in_progress", "inprogress", "live"]:
-                self.draft_status = "live"
-                return True
-            elif status_name in ["post", "completed", "complete"]:
-                self.draft_status = "complete"
-                return False
-            else:
-                self.draft_status = "pre"
-                return False
+        if data:
+            status = data.get("status", {})
+            if status:
+                state = status.get("state", "").lower()
+                if state == "in":
+                    self.draft_status = "live"
+                    return True
+                elif state == "post":
+                    self.draft_status = "complete"
+                    return False
+                else:
+                    self.draft_status = "pre"
+                    return False
 
         # Fallback: check by date
         return self._is_draft_date()
@@ -330,15 +339,6 @@ class NFLDraftPlugin(BasePlugin):
         draft_end = datetime(self.draft_year, 4, 27)
 
         return draft_start <= now <= draft_end
-
-    def _update_current_round(self) -> None:
-        """Update current round number during live draft."""
-        status_data = self._fetch_draft_status()
-
-        if status_data:
-            current_round = status_data.get("currentRound", status_data.get("round", 1))
-            if isinstance(current_round, int) and 1 <= current_round <= 7:
-                self.current_round = current_round
 
     def _create_draft_scroll_image(self) -> None:
         """Create scrolling image with all draft picks."""
@@ -468,17 +468,6 @@ class NFLDraftPlugin(BasePlugin):
         """
         current_time = time.time()
 
-        # Check draft status periodically (every 5 minutes during draft season)
-        if self.last_live_check_time is None or current_time - self.last_live_check_time > 300:
-            was_live = self.is_draft_live
-            self.is_draft_live = self._check_draft_live_status()
-            self.last_live_check_time = current_time
-
-            # If status changed, force refresh
-            if was_live != self.is_draft_live:
-                self.logger.info(f"Draft status changed: live={self.is_draft_live}")
-                self.last_update_time = None
-
         # Determine refresh interval based on mode
         refresh_interval = self.live_refresh_interval if self.is_draft_live else self.projection_refresh_interval
 
@@ -489,17 +478,9 @@ class NFLDraftPlugin(BasePlugin):
         self.logger.info(f"Updating NFL Draft data (live={self.is_draft_live}, year={self.draft_year})")
 
         try:
-            # Fetch draft picks
-            if self.is_draft_live:
-                # During live draft, update current round and fetch that round
-                self._update_current_round()
-                self.draft_picks = self._fetch_draft_picks(round_num=self.current_round)
-            else:
-                # Off-season, fetch all configured rounds
-                self.draft_picks = []
-                for round_num in self.rounds_to_display:
-                    round_picks = self._fetch_draft_picks(round_num=round_num)
-                    self.draft_picks.extend(round_picks)
+            # Fetch all draft picks - _fetch_draft_picks handles filtering by rounds
+            # and also updates self.is_draft_live and self.current_round from API response
+            self.draft_picks = self._fetch_draft_picks()
 
             # Sort by pick number
             self.draft_picks.sort(key=lambda x: x.get("pick_number", 0))
