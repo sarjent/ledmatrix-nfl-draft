@@ -1,11 +1,11 @@
 # NFL Draft Plugin for LEDMatrix
 
-Displays projected and live NFL draft picks on your LED matrix display.
+Displays projected and live NFL draft picks from ESPN on your LED matrix display.
 
 ## Features
 
-- **Projected Draft Picks**: Shows mock draft picks from Tankathon during the off-season
-- **Live Draft Tracking**: Automatically switches to live mode during the NFL Draft event (ESPN API)
+- **Projected Draft Picks**: Shows mock draft / projected picks during the off-season
+- **Live Draft Tracking**: Automatically switches to live mode during the NFL Draft event
 - **Team Logos**: Displays NFL team logos from core LEDMatrix assets
 - **Scrolling Display**: Smooth horizontal scrolling through draft picks
 - **Configurable Rounds**: Display specific rounds (1, 2, 3) or all rounds
@@ -90,21 +90,12 @@ Add the following to your `config/config.json`:
 - Refreshes every 10 minutes (configurable)
 - Shows only the current round being drafted
 
-## Data Sources
+## Data Source
 
-This plugin uses multiple data sources:
-
-### Pre-Draft Mode (Mock Draft)
-- **Tankathon** (https://www.tankathon.com/nfl/mock_draft)
-- Provides projected/mock draft picks based on team needs
-- Refreshes daily (configurable)
+This plugin uses the ESPN public API for draft data:
 - No API key required
-
-### Live Draft Mode
-- **ESPN API** for real-time draft picks during the NFL Draft event
-- Automatically detects when draft is live
-- Refreshes every 10 minutes during live draft (configurable)
-- No API key required
+- Provides projected picks and live draft data
+- Automatically handles API rate limiting
 
 ## Requirements
 
