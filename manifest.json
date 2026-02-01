@@ -1,0 +1,46 @@
+{
+  "id": "nfl-draft",
+  "name": "NFL Draft",
+  "version": "1.0.0",
+  "author": "LEDMatrix Community",
+  "description": "Displays projected NFL draft picks from ESPN with live draft tracking support during the annual NFL Draft event. Shows team logos, player names, positions, and pick numbers in a scrolling display.",
+  "entry_point": "manager.py",
+  "class_name": "NFLDraftPlugin",
+  "category": "sports",
+  "tags": [
+    "nfl",
+    "draft",
+    "football",
+    "sports",
+    "espn"
+  ],
+  "display_modes": [
+    "nfl_draft"
+  ],
+  "update_interval": 86400,
+  "default_duration": 60,
+  "compatible_versions": [
+    ">=2.0.0"
+  ],
+  "icon": "fa-football",
+  "requires": {
+    "python": ">=3.9",
+    "display_size": {
+      "min_width": 64,
+      "min_height": 32
+    }
+  },
+  "api_requirements": [
+    {
+      "name": "ESPN API",
+      "required": true,
+      "description": "ESPN public API for draft data (no API key required)",
+      "url": "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/"
+    }
+  ],
+  "assets": {
+    "uses_core_assets": true,
+    "nfl_logos": "assets/sports/nfl_logos/"
+  },
+  "license": "MIT"
+}

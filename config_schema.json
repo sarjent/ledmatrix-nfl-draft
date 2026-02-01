@@ -1,0 +1,203 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "title": "NFL Draft Plugin Configuration",
+  "description": "Configuration for the NFL Draft plugin",
+  "properties": {
+    "enabled": {
+      "type": "boolean",
+      "description": "Enable or disable the plugin",
+      "default": true
+    },
+    "display_duration": {
+      "type": "number",
+      "description": "How long to display before rotating (in seconds). Uses dynamic duration when scrolling.",
+      "default": 60,
+      "minimum": 10,
+      "maximum": 300
+    },
+    "rounds": {
+      "type": "string",
+      "description": "Comma-separated list of rounds to display (e.g., '1,2,3' or '1' or 'all')",
+      "default": "1,2,3"
+    },
+    "font": {
+      "type": "string",
+      "description": "Font file name for player names (from assets/fonts/)",
+      "default": "4x6-font.ttf",
+      "enum": [
+        "4x6-font.ttf",
+        "5by7.regular.ttf",
+        "PressStart2P-Regular.ttf"
+      ]
+    },
+    "font_size": {
+      "type": "integer",
+      "description": "Font size for player names",
+      "default": 6,
+      "minimum": 4,
+      "maximum": 12
+    },
+    "player_name_color": {
+      "type": "object",
+      "description": "RGB color for player names",
+      "properties": {
+        "r": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "default": 255
+        },
+        "g": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "default": 255
+        },
+        "b": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "default": 255
+        }
+      },
+      "default": {
+        "r": 255,
+        "g": 255,
+        "b": 255
+      }
+    },
+    "pick_number_color": {
+      "type": "object",
+      "description": "RGB color for pick numbers (default white per requirements)",
+      "properties": {
+        "r": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "default": 255
+        },
+        "g": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "default": 255
+        },
+        "b": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "default": 255
+        }
+      },
+      "default": {
+        "r": 255,
+        "g": 255,
+        "b": 255
+      }
+    },
+    "scroll_speed": {
+      "type": "number",
+      "description": "Scroll speed in pixels per second",
+      "default": 30,
+      "minimum": 10,
+      "maximum": 100
+    },
+    "live_refresh_interval": {
+      "type": "integer",
+      "description": "Refresh interval in seconds during live draft (default 10 minutes = 600)",
+      "default": 600,
+      "minimum": 60,
+      "maximum": 1800
+    },
+    "projection_refresh_interval": {
+      "type": "integer",
+      "description": "Refresh interval in seconds for projected picks (default 24 hours = 86400)",
+      "default": 86400,
+      "minimum": 3600,
+      "maximum": 172800
+    },
+    "draft_year": {
+      "type": "integer",
+      "description": "Draft year to display (0 = auto-detect current/upcoming draft)",
+      "default": 0
+    },
+    "show_position": {
+      "type": "boolean",
+      "description": "Show player position after name",
+      "default": true
+    },
+    "show_college": {
+      "type": "boolean",
+      "description": "Show player college/school",
+      "default": false
+    },
+    "logo_size": {
+      "type": "integer",
+      "description": "Size of team logo in pixels (height)",
+      "default": 20,
+      "minimum": 12,
+      "maximum": 32
+    },
+    "item_gap": {
+      "type": "integer",
+      "description": "Gap in pixels between draft pick items",
+      "default": 32,
+      "minimum": 16,
+      "maximum": 64
+    },
+    "transition": {
+      "type": "object",
+      "description": "Transition settings",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "redraw",
+            "fade",
+            "slide",
+            "wipe"
+          ],
+          "default": "redraw"
+        },
+        "speed": {
+          "type": "integer",
+          "description": "Transition speed (1-10)",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 10
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "dynamic_duration": {
+      "type": "object",
+      "description": "Dynamic duration settings for scroll completion",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "min_duration": {
+          "type": "number",
+          "description": "Minimum display duration in seconds",
+          "default": 30
+        },
+        "max_duration": {
+          "type": "number",
+          "description": "Maximum display duration in seconds",
+          "default": 300
+        }
+      }
+    },
+    "live_priority": {
+      "type": "boolean",
+      "description": "Enable live priority takeover during live draft",
+      "default": false
+    }
+  },
+  "additionalProperties": false
+}
