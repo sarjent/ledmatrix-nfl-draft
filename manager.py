@@ -204,6 +204,9 @@ class NFLDraftPlugin(BasePlugin):
         """
         Fetch draft picks from ESPN site API.
 
+        For pre-draft: Builds mock draft by matching top prospects with draft order.
+        For live/post-draft: Uses actual draft pick data.
+
         Args:
             round_num: Specific round to fetch, or None for all configured rounds
 
@@ -235,79 +238,96 @@ class NFLDraftPlugin(BasePlugin):
             if isinstance(current_round, int):
                 self.current_round = current_round
 
-        # Parse picks from the response
+        # Build team lookup (teamId -> team info)
+        teams_lookup = {}
+        for team in data.get("teams", []):
+            team_id = team.get("id")
+            if team_id:
+                teams_lookup[str(team_id)] = team
+
+        # Get draft order from picks
         raw_picks = data.get("picks", [])
         self.logger.info(f"Found {len(raw_picks)} picks in ESPN response")
 
-        for item in raw_picks:
-            pick_data = self._parse_site_pick_data(item)
-            if pick_data:
-                # Filter by round if specified
-                pick_round = pick_data.get("round", 1)
-                if round_num is None or pick_round == round_num:
-                    # Also filter by configured rounds
-                    if pick_round in self.rounds_to_display:
-                        picks.append(pick_data)
+        # Get top prospects for mock draft (pre-draft mode)
+        prospects = []
+        current_data = data.get("current", {})
+        best_available = current_data.get("bestAvailablePicks", [])
+
+        if best_available:
+            # Sort by overall rank
+            for prospect in best_available:
+                overall_rank = 999
+                for attr in prospect.get("attributes", []):
+                    if attr.get("name") == "overall":
+                        try:
+                            overall_rank = int(attr.get("displayValue", 999))
+                        except (ValueError, TypeError):
+                            pass
+                prospect["_overall_rank"] = overall_rank
+            prospects = sorted(best_available, key=lambda x: x.get("_overall_rank", 999))
+
+        self.logger.info(f"Found {len(prospects)} prospects for mock draft")
+
+        # Build picks list
+        for idx, raw_pick in enumerate(raw_picks):
+            pick_number = raw_pick.get("overall", idx + 1)
+            pick_round = raw_pick.get("round", 1)
+
+            # Filter by round
+            if round_num is not None and pick_round != round_num:
+                continue
+            if pick_round not in self.rounds_to_display:
+                continue
+
+            # Get team info
+            team_id = str(raw_pick.get("teamId", ""))
+            team_info = teams_lookup.get(team_id, {})
+
+            pick_data = {
+                "pick_number": pick_number,
+                "round": pick_round,
+                "round_pick": raw_pick.get("pick", 0),
+                "team_abbr": team_info.get("abbreviation", ""),
+                "team_name": team_info.get("displayName", ""),
+                "player_name": "TBD",
+                "position": "",
+                "college": ""
+            }
+
+            # For pre-draft, match with prospect by rank
+            if self.draft_status == "pre" and idx < len(prospects):
+                prospect = prospects[idx]
+                pick_data["player_name"] = prospect.get("displayName", "TBD")
+
+                # Get position
+                position = prospect.get("position", {})
+                if isinstance(position, dict):
+                    pos_id = position.get("id")
+                    # Map position ID to abbreviation from positions list
+                    for pos in data.get("positions", []):
+                        if str(pos.get("id")) == str(pos_id):
+                            pick_data["position"] = pos.get("abbreviation", "")
+                            break
+
+                # Get college from team (prospect's college team)
+                prospect_team = prospect.get("team", {})
+                if prospect_team:
+                    pick_data["college"] = prospect_team.get("shortDisplayName", prospect_team.get("name", ""))
+
+            # For live/post draft, use athlete data if available
+            elif raw_pick.get("athlete"):
+                athlete = raw_pick["athlete"]
+                pick_data["player_name"] = athlete.get("displayName", "TBD")
+                position = athlete.get("position", {})
+                if isinstance(position, dict):
+                    pick_data["position"] = position.get("abbreviation", "")
+
+            # Only add if we have meaningful data
+            if pick_data["team_abbr"] or pick_data["player_name"] != "TBD":
+                picks.append(pick_data)
 
         return picks
-
-    def _parse_site_pick_data(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """
-        Parse ESPN site API pick data into standardized format.
-
-        Site API structure:
-        {
-            "pick": 1,
-            "overall": 1,
-            "round": 1,
-            "team": {"id": "13", "abbreviation": "LV", "displayName": "Las Vegas Raiders"},
-            "athlete": {"displayName": "...", "position": {"abbreviation": "QB"}, "college": {...}}
-        }
-        """
-        if not data:
-            return None
-
-        pick = {
-            "pick_number": data.get("overall", data.get("pick", 0)),
-            "round": data.get("round", 1),
-            "round_pick": data.get("pick", 0),
-            "player_name": "TBD",
-            "position": "",
-            "college": "",
-            "team_abbr": "",
-            "team_name": ""
-        }
-
-        # Extract team info (NFL team that has the pick)
-        team = data.get("team", {})
-        if isinstance(team, dict):
-            pick["team_abbr"] = team.get("abbreviation", "")
-            pick["team_name"] = team.get("displayName", team.get("name", ""))
-
-        # Extract athlete info (projected/drafted player)
-        athlete = data.get("athlete", {})
-        if isinstance(athlete, dict):
-            pick["player_name"] = athlete.get("displayName", athlete.get("fullName", "TBD"))
-
-            # Position
-            position = athlete.get("position", {})
-            if isinstance(position, dict):
-                pick["position"] = position.get("abbreviation", position.get("name", ""))
-            elif isinstance(position, str):
-                pick["position"] = position
-
-            # College
-            college = athlete.get("college", {})
-            if isinstance(college, dict):
-                pick["college"] = college.get("name", college.get("shortName", ""))
-            elif isinstance(college, str):
-                pick["college"] = college
-
-        # Skip picks without player info (unless we want to show "TBD")
-        if pick["player_name"] == "TBD" and not pick["team_abbr"]:
-            return None
-
-        return pick
 
     def _check_draft_live_status(self) -> bool:
         """
