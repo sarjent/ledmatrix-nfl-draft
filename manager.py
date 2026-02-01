@@ -15,11 +15,15 @@ Features:
 API Version: 1.0.0
 """
 
+import concurrent.futures
 import logging
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
+from urllib.request import urlopen, Request
+from urllib.error import URLError
+import json
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -200,6 +204,111 @@ class NFLDraftPlugin(BasePlugin):
         )
         return data or {}
 
+    def _fetch_all_prospects(self) -> List[Dict[str, Any]]:
+        """
+        Fetch all draft prospects from ESPN core API.
+
+        This fetches the full list of draft-eligible athletes and their rankings,
+        allowing us to build a complete mock draft by matching prospects to picks.
+
+        Returns:
+            List of prospect dictionaries sorted by overall rank
+        """
+        cache_key = f"nfl_draft_prospects_{self.draft_year}"
+
+        # Check cache first
+        cached_data = self.cache_manager.get(cache_key)
+        if cached_data:
+            self.logger.debug("Using cached prospect data")
+            return cached_data
+
+        prospects = []
+
+        try:
+            # Get list of all draft athletes
+            athletes_url = self.ESPN_DRAFT_ATHLETES.format(year=self.draft_year)
+            athletes_url += "?limit=300"  # Get up to 300 prospects
+
+            self.logger.info(f"Fetching draft athletes list from {athletes_url}")
+
+            req = Request(athletes_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urlopen(req, timeout=30) as response:
+                data = json.loads(response.read().decode())
+
+            items = data.get("items", [])
+            self.logger.info(f"Found {len(items)} athlete references")
+
+            if not items:
+                return prospects
+
+            # Extract athlete URLs from references
+            athlete_urls = []
+            for item in items:
+                url = item.get("$ref")
+                if url:
+                    athlete_urls.append(url)
+
+            # Fetch athlete details in parallel (limit concurrency)
+            def fetch_athlete(url: str) -> Optional[Dict[str, Any]]:
+                try:
+                    req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urlopen(req, timeout=10) as response:
+                        return json.loads(response.read().decode())
+                except Exception as e:
+                    self.logger.debug(f"Failed to fetch athlete: {e}")
+                    return None
+
+            # Use ThreadPoolExecutor for parallel fetching
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                athlete_data = list(executor.map(fetch_athlete, athlete_urls[:150]))  # Limit to top 150
+
+            # Process athlete data
+            for athlete in athlete_data:
+                if not athlete:
+                    continue
+
+                # Extract overall rank from attributes
+                overall_rank = 999
+                for attr in athlete.get("attributes", []):
+                    if attr.get("name") == "overall":
+                        try:
+                            overall_rank = int(float(attr.get("value", 999)))
+                        except (ValueError, TypeError):
+                            pass
+
+                # Get position
+                position = athlete.get("position", {})
+                pos_abbr = position.get("abbreviation", "") if isinstance(position, dict) else ""
+
+                # Get college team
+                college = ""
+                college_team = athlete.get("team", {})
+                if college_team:
+                    college = college_team.get("shortDisplayName", college_team.get("name", ""))
+
+                prospect = {
+                    "id": athlete.get("id"),
+                    "displayName": athlete.get("displayName", "Unknown"),
+                    "position": pos_abbr,
+                    "college": college,
+                    "overall_rank": overall_rank
+                }
+                prospects.append(prospect)
+
+            # Sort by overall rank
+            prospects.sort(key=lambda x: x.get("overall_rank", 999))
+
+            self.logger.info(f"Fetched and ranked {len(prospects)} prospects")
+
+            # Cache the results
+            if prospects:
+                self.cache_manager.set(cache_key, prospects, ttl=self.projection_refresh_interval)
+
+        except Exception as e:
+            self.logger.error(f"Error fetching prospects: {e}", exc_info=True)
+
+        return prospects
+
     def _fetch_draft_picks(self, round_num: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Fetch draft picks from ESPN site API.
@@ -249,24 +358,9 @@ class NFLDraftPlugin(BasePlugin):
         raw_picks = data.get("picks", [])
         self.logger.info(f"Found {len(raw_picks)} picks in ESPN response")
 
-        # Get top prospects for mock draft (pre-draft mode)
-        prospects = []
-        current_data = data.get("current", {})
-        best_available = current_data.get("bestAvailablePicks", [])
-
-        if best_available:
-            # Sort by overall rank
-            for prospect in best_available:
-                overall_rank = 999
-                for attr in prospect.get("attributes", []):
-                    if attr.get("name") == "overall":
-                        try:
-                            overall_rank = int(attr.get("displayValue", 999))
-                        except (ValueError, TypeError):
-                            pass
-                prospect["_overall_rank"] = overall_rank
-            prospects = sorted(best_available, key=lambda x: x.get("_overall_rank", 999))
-
+        # Get all prospects for mock draft (pre-draft mode)
+        # Fetch from core API to get full prospect list with rankings
+        prospects = self._fetch_all_prospects() if self.draft_status == "pre" else []
         self.logger.info(f"Found {len(prospects)} prospects for mock draft")
 
         # Build picks list
@@ -299,21 +393,8 @@ class NFLDraftPlugin(BasePlugin):
             if self.draft_status == "pre" and idx < len(prospects):
                 prospect = prospects[idx]
                 pick_data["player_name"] = prospect.get("displayName", "TBD")
-
-                # Get position
-                position = prospect.get("position", {})
-                if isinstance(position, dict):
-                    pos_id = position.get("id")
-                    # Map position ID to abbreviation from positions list
-                    for pos in data.get("positions", []):
-                        if str(pos.get("id")) == str(pos_id):
-                            pick_data["position"] = pos.get("abbreviation", "")
-                            break
-
-                # Get college from team (prospect's college team)
-                prospect_team = prospect.get("team", {})
-                if prospect_team:
-                    pick_data["college"] = prospect_team.get("shortDisplayName", prospect_team.get("name", ""))
+                pick_data["position"] = prospect.get("position", "")
+                pick_data["college"] = prospect.get("college", "")
 
             # For live/post draft, use athlete data if available
             elif raw_pick.get("athlete"):
