@@ -31,9 +31,16 @@
         "PressStart2P-Regular.ttf"
       ]
     },
-    "font_size": {
+    "player_name_font_size": {
       "type": "integer",
       "description": "Font size for player names",
+      "default": 12,
+      "minimum": 6,
+      "maximum": 16
+    },
+    "detail_font_size": {
+      "type": "integer",
+      "description": "Font size for position and pick number",
       "default": 6,
       "minimum": 4,
       "maximum": 12
@@ -134,10 +141,10 @@
     },
     "logo_size": {
       "type": "integer",
-      "description": "Size of team logo in pixels (height)",
-      "default": 20,
-      "minimum": 12,
-      "maximum": 32
+      "description": "Size of team logo in pixels (height). Use 0 for auto-sizing based on display height.",
+      "default": 0,
+      "minimum": 0,
+      "maximum": 64
     },
     "item_gap": {
       "type": "integer",

@@ -76,9 +76,9 @@ class NFLDraftPlugin(BasePlugin):
         self.last_update_time: Optional[float] = None
         self.last_live_check_time: Optional[float] = None
 
-        # Font loading
-        self.font = self._load_font()
-        self.pick_font = self._load_font()
+        # Font loading - separate sizes for player name vs details
+        self.player_name_font = self._load_font(self.player_name_font_size)
+        self.detail_font = self._load_font(self.detail_font_size)
 
         # Logo path (using core LEDMatrix assets)
         self.logo_base_path = Path("assets/sports/nfl_logos")
@@ -105,7 +105,8 @@ class NFLDraftPlugin(BasePlugin):
 
         # Font settings
         self.font_name = self.config.get("font", "4x6-font.ttf")
-        self.font_size = self.config.get("font_size", 6)
+        self.player_name_font_size = self.config.get("player_name_font_size", 12)
+        self.detail_font_size = self.config.get("detail_font_size", 6)
 
         # Color settings
         player_color = self.config.get("player_name_color", {"r": 255, "g": 255, "b": 255})
@@ -133,8 +134,15 @@ class NFLDraftPlugin(BasePlugin):
         # Display settings
         self.show_position = self.config.get("show_position", True)
         self.show_college = self.config.get("show_college", False)
-        self.logo_size = self.config.get("logo_size", 20)
         self.item_gap = self.config.get("item_gap", 32)
+
+        # Logo size - 0 means auto-size based on display height (like NFL Scoreboard)
+        logo_size_config = self.config.get("logo_size", 0)
+        if logo_size_config == 0:
+            # Auto-size: use display height (fills vertical space)
+            self.logo_size = self.display_height
+        else:
+            self.logo_size = logo_size_config
 
         # Dynamic duration settings
         dynamic_duration = self.config.get("dynamic_duration", {})
@@ -155,14 +163,14 @@ class NFLDraftPlugin(BasePlugin):
         if self.draft_year == 0:
             self.draft_year = self._get_current_draft_year()
 
-    def _load_font(self) -> ImageFont.ImageFont:
-        """Load configured font."""
+    def _load_font(self, size: int) -> ImageFont.ImageFont:
+        """Load configured font at specified size."""
         try:
             font_path = Path("assets/fonts") / self.font_name
             if font_path.exists():
-                return ImageFont.truetype(str(font_path), self.font_size)
+                return ImageFont.truetype(str(font_path), size)
         except Exception as e:
-            self.logger.warning(f"Could not load font {self.font_name}: {e}")
+            self.logger.warning(f"Could not load font {self.font_name} at size {size}: {e}")
 
         return ImageFont.load_default()
 
@@ -370,9 +378,10 @@ class NFLDraftPlugin(BasePlugin):
 
     def _create_pick_item(self, pick: Dict[str, Any]) -> Optional[Image.Image]:
         """
-        Create a single pick item image with logo, name, and pick number.
+        Create a single pick item image with logo, name, position, and pick number.
 
-        Layout: [LOGO] Player Name, POS [#PICK]
+        Layout: [LOGO] Player Name  POS  #PICK
+                (large logo)  (large font)  (small font)
 
         Args:
             pick: Pick data dictionary
@@ -387,34 +396,57 @@ class NFLDraftPlugin(BasePlugin):
         logo = self._load_team_logo(team_abbr)
         logo_width = logo.width if logo else 0
 
-        # Build player text
-        player_text = pick.get("player_name", "TBD")
-        if self.show_position and pick.get("position"):
-            player_text += f", {pick['position']}"
-        if self.show_college and pick.get("college"):
-            player_text += f" ({pick['college']})"
+        # Player name (large font)
+        player_name = pick.get("player_name", "TBD")
 
-        # Pick number text
+        # Position text (small font)
+        position_text = ""
+        if self.show_position and pick.get("position"):
+            position_text = pick["position"]
+
+        # College text (small font, optional)
+        college_text = ""
+        if self.show_college and pick.get("college"):
+            college_text = f"({pick['college']})"
+
+        # Pick number text (small font)
         pick_number = pick.get("pick_number", 0)
         pick_text = f"#{pick_number}"
 
-        # Calculate text widths
+        # Calculate text widths using temp draw context
         temp_img = Image.new('RGB', (1, 1))
         temp_draw = ImageDraw.Draw(temp_img)
 
         try:
-            player_text_width = int(temp_draw.textlength(player_text, font=self.font))
-            pick_text_width = int(temp_draw.textlength(pick_text, font=self.pick_font))
+            player_name_width = int(temp_draw.textlength(player_name, font=self.player_name_font))
+            position_width = int(temp_draw.textlength(position_text, font=self.detail_font)) if position_text else 0
+            college_width = int(temp_draw.textlength(college_text, font=self.detail_font)) if college_text else 0
+            pick_text_width = int(temp_draw.textlength(pick_text, font=self.detail_font))
         except Exception:
             # Fallback for older PIL versions
-            player_bbox = temp_draw.textbbox((0, 0), player_text, font=self.font)
-            pick_bbox = temp_draw.textbbox((0, 0), pick_text, font=self.pick_font)
-            player_text_width = player_bbox[2] - player_bbox[0]
+            player_bbox = temp_draw.textbbox((0, 0), player_name, font=self.player_name_font)
+            player_name_width = player_bbox[2] - player_bbox[0]
+            if position_text:
+                pos_bbox = temp_draw.textbbox((0, 0), position_text, font=self.detail_font)
+                position_width = pos_bbox[2] - pos_bbox[0]
+            else:
+                position_width = 0
+            if college_text:
+                col_bbox = temp_draw.textbbox((0, 0), college_text, font=self.detail_font)
+                college_width = col_bbox[2] - col_bbox[0]
+            else:
+                college_width = 0
+            pick_bbox = temp_draw.textbbox((0, 0), pick_text, font=self.detail_font)
             pick_text_width = pick_bbox[2] - pick_bbox[0]
 
         # Calculate total item width
-        element_spacing = 4
-        total_width = logo_width + element_spacing + player_text_width + element_spacing + pick_text_width
+        element_spacing = 6
+        total_width = logo_width + element_spacing + player_name_width
+        if position_text:
+            total_width += element_spacing + position_width
+        if college_text:
+            total_width += element_spacing + college_width
+        total_width += element_spacing + pick_text_width
 
         # Create item image
         item_img = Image.new('RGB', (total_width, item_height), (0, 0, 0))
@@ -422,7 +454,7 @@ class NFLDraftPlugin(BasePlugin):
 
         current_x = 0
 
-        # Paste logo (left side)
+        # Paste logo (left side, vertically centered)
         if logo:
             logo_y = (item_height - logo.height) // 2
             if logo.mode == 'RGBA':
@@ -431,13 +463,26 @@ class NFLDraftPlugin(BasePlugin):
                 item_img.paste(logo, (current_x, logo_y))
             current_x += logo_width + element_spacing
 
-        # Draw player name (center)
-        text_y = (item_height - self.font_size) // 2
-        draw.text((current_x, text_y), player_text, font=self.font, fill=self.player_color)
-        current_x += player_text_width + element_spacing
+        # Draw player name (large font, vertically centered)
+        player_name_y = (item_height - self.player_name_font_size) // 2
+        draw.text((current_x, player_name_y), player_name, font=self.player_name_font, fill=self.player_color)
+        current_x += player_name_width + element_spacing
 
-        # Draw pick number (right side, always white per requirements)
-        draw.text((current_x, text_y), pick_text, font=self.pick_font, fill=self.pick_color)
+        # Calculate vertical position for small text (detail font)
+        detail_y = (item_height - self.detail_font_size) // 2
+
+        # Draw position (small font)
+        if position_text:
+            draw.text((current_x, detail_y), position_text, font=self.detail_font, fill=self.player_color)
+            current_x += position_width + element_spacing
+
+        # Draw college (small font)
+        if college_text:
+            draw.text((current_x, detail_y), college_text, font=self.detail_font, fill=(180, 180, 180))
+            current_x += college_width + element_spacing
+
+        # Draw pick number (small font, white)
+        draw.text((current_x, detail_y), pick_text, font=self.detail_font, fill=self.pick_color)
 
         return item_img
 
@@ -533,15 +578,15 @@ class NFLDraftPlugin(BasePlugin):
 
         message = "No Draft Data"
         try:
-            text_width = draw.textlength(message, font=self.font)
+            text_width = draw.textlength(message, font=self.detail_font)
         except Exception:
-            bbox = draw.textbbox((0, 0), message, font=self.font)
+            bbox = draw.textbbox((0, 0), message, font=self.detail_font)
             text_width = bbox[2] - bbox[0]
 
         x = (self.display_width - text_width) // 2
-        y = (self.display_height - self.font_size) // 2
+        y = (self.display_height - self.detail_font_size) // 2
 
-        draw.text((x, y), message, font=self.font, fill=(150, 150, 150))
+        draw.text((x, y), message, font=self.detail_font, fill=(150, 150, 150))
 
         self.display_manager.image = img
         self.display_manager.update_display()
@@ -553,15 +598,15 @@ class NFLDraftPlugin(BasePlugin):
 
         message = "Error"
         try:
-            text_width = draw.textlength(message, font=self.font)
+            text_width = draw.textlength(message, font=self.detail_font)
         except Exception:
-            bbox = draw.textbbox((0, 0), message, font=self.font)
+            bbox = draw.textbbox((0, 0), message, font=self.detail_font)
             text_width = bbox[2] - bbox[0]
 
         x = (self.display_width - text_width) // 2
-        y = (self.display_height - self.font_size) // 2
+        y = (self.display_height - self.detail_font_size) // 2
 
-        draw.text((x, y), message, font=self.font, fill=(255, 100, 100))
+        draw.text((x, y), message, font=self.detail_font, fill=(255, 100, 100))
 
         self.display_manager.image = img
         self.display_manager.update_display()
@@ -640,7 +685,8 @@ class NFLDraftPlugin(BasePlugin):
         """Handle configuration changes."""
         super().on_config_change(new_config)
         self._load_config()
-        self.font = self._load_font()
+        self.player_name_font = self._load_font(self.player_name_font_size)
+        self.detail_font = self._load_font(self.detail_font_size)
 
         # Force data refresh on config change
         self.last_update_time = None
