@@ -629,28 +629,45 @@ class NFLDraftPlugin(BasePlugin):
         """
         Load the NFL Draft logo and return it as a display_height-tall canvas,
         ready to be prepended to the scroll content as the first item.
+
+        Transparent borders are auto-cropped before resizing so that the visible
+        logo fills as much vertical space as possible on the display.
         """
         logo_path = Path("assets/sports/nfl_logos/nfl-draft.png")
-        raw = self.logo_helper.load_logo(
-            "NFL-DRAFT",
-            logo_path,
-            max_width=self.display_width // 2,
-            max_height=self.display_height
-        )
-        if not raw:
-            self.logger.warning("NFL Draft logo not found or failed to load")
+        if not logo_path.exists():
+            self.logger.warning(f"NFL Draft logo not found at {logo_path}")
             return None
 
-        # Wrap in a full display_height canvas so it composites cleanly with pick items
-        canvas = Image.new('RGB', (raw.width, self.display_height), (0, 0, 0))
-        y = (self.display_height - raw.height) // 2
-        if raw.mode == 'RGBA':
-            canvas.paste(raw, (0, y), raw)
-        else:
-            canvas.paste(raw, (0, y))
+        try:
+            raw = Image.open(logo_path)
+            if raw.mode != 'RGBA':
+                raw = raw.convert('RGBA')
 
-        self.logger.debug(f"Loaded NFL Draft logo ({raw.width}x{raw.height})")
-        return canvas
+            # Crop away transparent borders so only the logo content remains.
+            # Without this, a large transparent canvas (e.g. 1000×400 for a
+            # logo that only fills ~380×390) would cause the resize to produce
+            # a tiny result.
+            bbox = raw.getbbox()
+            if bbox:
+                raw = raw.crop(bbox)
+
+            # Resize to fit within display bounds while preserving aspect ratio
+            raw.thumbnail(
+                (self.display_width // 2, self.display_height),
+                Image.Resampling.LANCZOS
+            )
+
+            # Wrap in a full display_height canvas so it composites cleanly
+            canvas = Image.new('RGB', (raw.width, self.display_height), (0, 0, 0))
+            y = (self.display_height - raw.height) // 2
+            canvas.paste(raw, (0, y), raw)
+
+            self.logger.debug(f"Loaded NFL Draft logo ({raw.width}x{raw.height})")
+            return canvas
+
+        except Exception as e:
+            self.logger.error(f"Error loading NFL Draft logo: {e}")
+            return None
 
     def update(self) -> None:
         """
