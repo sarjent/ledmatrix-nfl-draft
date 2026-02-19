@@ -600,16 +600,16 @@ class NFLDraftPlugin(BasePlugin):
 
     def _ensure_logo_installed(self) -> None:
         """
-        Copy the bundled nfl-draft.png to the core assets directory if it is not
+        Copy the bundled nfl_draft_logo.png to the core assets directory if it is not
         already present.  This runs on every startup so the logo is available
         after a fresh plugin install or update.
         """
-        target = Path("assets/sports/nfl_logos/nfl-draft.png")
+        target = Path("assets/sports/nfl_logos/nfl_draft_logo.png")
         if target.exists():
             return  # Already installed, nothing to do
 
         # The logo ships alongside this manager.py file
-        source = Path(__file__).parent / "nfl-draft.png"
+        source = Path(__file__).parent / "nfl_draft_logo.png"
         if not source.exists():
             self.logger.warning(
                 f"Bundled NFL Draft logo not found at {source}; "
@@ -633,7 +633,7 @@ class NFLDraftPlugin(BasePlugin):
         Transparent borders are auto-cropped before resizing so that the visible
         logo fills as much vertical space as possible on the display.
         """
-        logo_path = Path("assets/sports/nfl_logos/nfl-draft.png")
+        logo_path = Path("assets/sports/nfl_logos/nfl_draft_logo.png")
         if not logo_path.exists():
             self.logger.warning(f"NFL Draft logo not found at {logo_path}")
             return None
