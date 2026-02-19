@@ -137,7 +137,7 @@
     "show_college": {
       "type": "boolean",
       "description": "Show player college/school",
-      "default": false
+      "default": true
     },
     "logo_size": {
       "type": "integer",

@@ -137,7 +137,7 @@ class NFLDraftPlugin(BasePlugin):
 
         # Display settings
         self.show_position = self.config.get("show_position", True)
-        self.show_college = self.config.get("show_college", False)
+        self.show_college = self.config.get("show_college", True)
         self.item_gap = self.config.get("item_gap", 32)
 
         # Logo size - 0 means auto-size based on display height (like NFL Scoreboard)
@@ -403,6 +403,9 @@ class NFLDraftPlugin(BasePlugin):
                 position = athlete.get("position", {})
                 if isinstance(position, dict):
                     pick_data["position"] = position.get("abbreviation", "")
+                college_team = athlete.get("team", {})
+                if college_team and isinstance(college_team, dict):
+                    pick_data["college"] = college_team.get("shortDisplayName", college_team.get("name", ""))
 
             # Only add if we have meaningful data
             if pick_data["team_abbr"] or pick_data["player_name"] != "TBD":
