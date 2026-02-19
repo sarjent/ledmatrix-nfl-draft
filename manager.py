@@ -108,7 +108,7 @@ class NFLDraftPlugin(BasePlugin):
             self.rounds_to_display = [1, 2, 3]
 
         # Font settings
-        self.font_name = self.config.get("font", "4x6-font.ttf")
+        self.font_name = self.config.get("font", "PressStart2P-Regular.ttf")
         self.player_name_font_size = self.config.get("player_name_font_size", 12)
         self.detail_font_size = self.config.get("detail_font_size", 6)
 
@@ -501,16 +501,15 @@ class NFLDraftPlugin(BasePlugin):
         # Player name (large font) - top line
         player_name = pick.get("player_name", "TBD")
 
-        # Build detail line: POS  #PICK  (School)
+        # Build detail line: R{round}  POS  (College)
         detail_parts = []
+
+        # Round number
+        detail_parts.append(f"R{pick.get('round', 0)}")
 
         # Position
         if self.show_position and pick.get("position"):
             detail_parts.append(pick["position"])
-
-        # Pick number
-        pick_number = pick.get("pick_number", 0)
-        detail_parts.append(f"#{pick_number}")
 
         # College (optional)
         if self.show_college and pick.get("college"):

@@ -24,7 +24,7 @@
     "font": {
       "type": "string",
       "description": "Font file name for player names (from assets/fonts/)",
-      "default": "4x6-font.ttf",
+      "default": "PressStart2P-Regular.ttf",
       "enum": [
         "4x6-font.ttf",
         "5by7.regular.ttf",
