@@ -204,6 +204,12 @@
       "type": "boolean",
       "description": "Enable live priority takeover during live draft",
       "default": false
+    },
+    "vegas_mode": {
+      "type": "string",
+      "description": "Override how this plugin appears in Vegas scroll mode. 'scroll' = individual picks scroll through the stream (default), 'fixed' = entire display scrolls by as one block, 'static' = scroll pauses while plugin displays for its duration.",
+      "enum": ["scroll", "fixed", "static"],
+      "default": "scroll"
     }
   },
   "additionalProperties": false

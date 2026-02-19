@@ -27,7 +27,7 @@ import json
 
 from PIL import Image, ImageDraw, ImageFont
 
-from src.plugin_system.base_plugin import BasePlugin
+from src.plugin_system.base_plugin import BasePlugin, VegasDisplayMode
 from src.common.scroll_helper import ScrollHelper
 from src.common.logo_helper import LogoHelper
 from src.common.api_helper import APIHelper
@@ -714,6 +714,39 @@ class NFLDraftPlugin(BasePlugin):
         if self.supports_dynamic_duration():
             return float(self.scroll_helper.get_dynamic_duration())
         return self.config.get('display_duration', 60.0)
+
+    # -------------------------------------------------------------------------
+    # Vegas scroll mode support
+    # -------------------------------------------------------------------------
+
+    def get_vegas_content_type(self) -> str:
+        """Report as multi-item content so Vegas uses SCROLL mode by default."""
+        return 'multi'
+
+    def get_vegas_content(self) -> Optional[List[Image.Image]]:
+        """
+        Return one image per draft pick for Vegas scroll mode.
+
+        Vegas composes these individually into the continuous scroll stream,
+        giving smoother integration than handing it the pre-built scroll image.
+        Returns None if no picks are loaded yet.
+        """
+        if not self.draft_picks:
+            return None
+
+        # Mirror the filtering logic used in _create_draft_scroll_image
+        if self.is_draft_live:
+            picks_to_display = [p for p in self.draft_picks if p["round"] == self.current_round]
+        else:
+            picks_to_display = [p for p in self.draft_picks if p["round"] in self.rounds_to_display]
+
+        images = []
+        for pick in picks_to_display:
+            img = self._create_pick_item(pick)
+            if img:
+                images.append(img)
+
+        return images if images else None
 
     def has_live_priority(self) -> bool:
         """Check if live priority is enabled."""
