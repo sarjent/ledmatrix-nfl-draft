@@ -87,6 +87,10 @@ class NFLDraftPlugin(BasePlugin):
         # Logo path (using core LEDMatrix assets)
         self.logo_base_path = Path("assets/sports/nfl_logos")
 
+        # Ensure NFL Draft logo is installed and load it for the scroll header
+        self._ensure_logo_installed()
+        self.nfl_draft_logo = self._load_nfl_draft_logo()
+
         self.logger.info(f"NFL Draft plugin initialized for year {self.draft_year}")
 
     def _load_config(self) -> None:
@@ -456,6 +460,10 @@ class NFLDraftPlugin(BasePlugin):
         """Create scrolling image with all draft picks."""
         content_items = []
 
+        # Prepend NFL Draft logo as the first scroll item
+        if self.nfl_draft_logo:
+            content_items.append(self.nfl_draft_logo)
+
         # Filter picks by configured rounds
         picks_to_display = [p for p in self.draft_picks if p["round"] in self.rounds_to_display]
 
@@ -589,6 +597,60 @@ class NFLDraftPlugin(BasePlugin):
         )
 
         return logo
+
+    def _ensure_logo_installed(self) -> None:
+        """
+        Copy the bundled nfl-draft.png to the core assets directory if it is not
+        already present.  This runs on every startup so the logo is available
+        after a fresh plugin install or update.
+        """
+        target = Path("assets/sports/nfl_logos/nfl-draft.png")
+        if target.exists():
+            return  # Already installed, nothing to do
+
+        # The logo ships alongside this manager.py file
+        source = Path(__file__).parent / "nfl-draft.png"
+        if not source.exists():
+            self.logger.warning(
+                f"Bundled NFL Draft logo not found at {source}; "
+                "logo will be unavailable until placed manually"
+            )
+            return
+
+        try:
+            import shutil
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(source), str(target))
+            self.logger.info(f"Installed NFL Draft logo to {target}")
+        except Exception as e:
+            self.logger.error(f"Failed to install NFL Draft logo: {e}")
+
+    def _load_nfl_draft_logo(self) -> Optional[Image.Image]:
+        """
+        Load the NFL Draft logo and return it as a display_height-tall canvas,
+        ready to be prepended to the scroll content as the first item.
+        """
+        logo_path = Path("assets/sports/nfl_logos/nfl-draft.png")
+        raw = self.logo_helper.load_logo(
+            "NFL-DRAFT",
+            logo_path,
+            max_width=self.display_width // 2,
+            max_height=self.display_height
+        )
+        if not raw:
+            self.logger.warning("NFL Draft logo not found or failed to load")
+            return None
+
+        # Wrap in a full display_height canvas so it composites cleanly with pick items
+        canvas = Image.new('RGB', (raw.width, self.display_height), (0, 0, 0))
+        y = (self.display_height - raw.height) // 2
+        if raw.mode == 'RGBA':
+            canvas.paste(raw, (0, y), raw)
+        else:
+            canvas.paste(raw, (0, y))
+
+        self.logger.debug(f"Loaded NFL Draft logo ({raw.width}x{raw.height})")
+        return canvas
 
     def update(self) -> None:
         """
@@ -743,6 +805,11 @@ class NFLDraftPlugin(BasePlugin):
             picks_to_display = [p for p in self.draft_picks if p["round"] in self.rounds_to_display]
 
         images = []
+
+        # Prepend NFL Draft logo as the first Vegas item
+        if self.nfl_draft_logo:
+            images.append(self.nfl_draft_logo)
+
         for pick in picks_to_display:
             img = self._create_pick_item(pick)
             if img:
