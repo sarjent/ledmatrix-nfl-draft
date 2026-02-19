@@ -501,11 +501,11 @@ class NFLDraftPlugin(BasePlugin):
         # Player name (large font) - top line
         player_name = pick.get("player_name", "TBD")
 
-        # Build detail line: R{round}  POS  (College)
+        # Build detail line: #PICK  POS  (College)
         detail_parts = []
 
-        # Round number
-        detail_parts.append(f"R{pick.get('round', 0)}")
+        # Overall pick number
+        detail_parts.append(f"#{pick.get('pick_number', 0)}")
 
         # Position
         if self.show_position and pick.get("position"):
