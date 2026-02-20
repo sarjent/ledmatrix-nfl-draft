@@ -361,9 +361,9 @@ class NFLDraftPlugin(BasePlugin):
         """
         Fetch completed draft picks from ESPN core API for simulate_live mode.
 
-        Uses the core API (sports.core.api.espn.com) which retains historical
-        draft data with real athlete and team references.  Athlete $ref URLs
-        are resolved in parallel to get player name, position, and college.
+        The core API /draft/rounds endpoint returns all round objects inline in
+        the items array — each item contains its full picks list directly.
+        Athlete $ref URLs are resolved in parallel for player name and position.
 
         Returns:
             List of pick dicts in the same format as _fetch_draft_picks()
@@ -379,7 +379,7 @@ class NFLDraftPlugin(BasePlugin):
         picks: List[Dict[str, Any]] = []
 
         try:
-            # 1. Get round list from core API
+            # Picks are inline in the rounds list — each item is a full round object
             rounds_url = (
                 f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl"
                 f"/seasons/{year}/draft/rounds?lang=en&region=us&limit=10"
@@ -388,36 +388,17 @@ class NFLDraftPlugin(BasePlugin):
             with urlopen(req, timeout=15) as response:
                 rounds_data = json.loads(response.read().decode())
 
-            round_refs = [
-                item.get("$ref") for item in rounds_data.get("items", [])
-                if item.get("$ref")
-            ]
-            self.logger.info(f"Found {len(round_refs)} rounds for {year} draft")
-
-            # 2. Fetch each round in parallel; skip rounds not in rounds_to_display
-            def fetch_round(round_ref_url: str) -> List[Tuple[int, Dict]]:
-                try:
-                    req = Request(round_ref_url, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urlopen(req, timeout=15) as response:
-                        rdata = json.loads(response.read().decode())
-                    round_num = rdata.get("round", 0)
-                    if round_num not in self.rounds_to_display:
-                        return []
-                    return [(round_num, p) for p in rdata.get("picks", [])]
-                except Exception as e:
-                    self.logger.debug(f"Failed to fetch round {round_ref_url}: {e}")
-                    return []
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=7) as executor:
-                round_results = list(executor.map(fetch_round, round_refs))
-
+            # Collect picks from matching rounds directly from the inline items
             raw_picks: List[Tuple[int, Dict]] = []
-            for result in round_results:
-                raw_picks.extend(result)
+            for item in rounds_data.get("items", []):
+                round_num = item.get("number", 0)
+                if round_num in self.rounds_to_display:
+                    for pick in item.get("picks", []):
+                        raw_picks.append((round_num, pick))
 
-            self.logger.info(f"Retrieved {len(raw_picks)} raw picks across configured rounds")
+            self.logger.info(f"Found {len(raw_picks)} picks across configured rounds for {year} draft")
 
-            # 3. Resolve athlete $ref URLs in parallel (index-aligned with raw_picks)
+            # Resolve athlete $ref URLs in parallel (index-aligned with raw_picks)
             athlete_urls = [
                 pick.get("athlete", {}).get("$ref", "") for (_rn, pick) in raw_picks
             ]
@@ -436,28 +417,24 @@ class NFLDraftPlugin(BasePlugin):
             with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
                 athlete_results = list(executor.map(fetch_athlete_ref, athlete_urls))
 
-            # 4. Build standardised pick dicts
+            # Build standardised pick dicts
             for i, (round_num, raw_pick) in enumerate(raw_picks):
                 athlete = athlete_results[i]
 
-                # Extract team ID from $ref URL last path segment
+                # Extract team ID from $ref URL — strip query params before splitting
                 team_ref = raw_pick.get("team", {}).get("$ref", "")
-                team_id = team_ref.rstrip("/").split("/")[-1] if team_ref else ""
+                team_id = team_ref.split("?")[0].rstrip("/").split("/")[-1] if team_ref else ""
                 team_abbr = teams_lookup.get(team_id, "")
 
                 player_name = "TBD"
                 position = ""
-                college = ""
                 if athlete:
                     player_name = athlete.get("displayName", "TBD")
                     pos = athlete.get("position", {})
                     if isinstance(pos, dict):
                         position = pos.get("abbreviation", "")
-                    college_team = athlete.get("team", {})
-                    if college_team and isinstance(college_team, dict):
-                        college = college_team.get(
-                            "shortDisplayName", college_team.get("name", "")
-                        )
+                    # Note: athlete.college and athlete.team are $ref objects in the
+                    # draft API; college name is not available without extra fetches.
 
                 pick_data: Dict[str, Any] = {
                     "pick_number": raw_pick.get("overall", i + 1),
@@ -467,7 +444,7 @@ class NFLDraftPlugin(BasePlugin):
                     "team_name": "",
                     "player_name": player_name,
                     "position": position,
-                    "college": college,
+                    "college": "",
                 }
 
                 if pick_data["team_abbr"] or pick_data["player_name"] != "TBD":
