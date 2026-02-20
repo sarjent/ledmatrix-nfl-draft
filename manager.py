@@ -95,22 +95,6 @@ class NFLDraftPlugin(BasePlugin):
 
     def _load_config(self) -> None:
         """Load and parse configuration values."""
-        # Rounds configuration
-        rounds_str = self.config.get("rounds", "1,2,3")
-        if rounds_str.lower() == "all":
-            self.rounds_to_display = list(range(1, 8))  # Rounds 1-7
-        else:
-            try:
-                self.rounds_to_display = [
-                    int(r.strip()) for r in rounds_str.split(",")
-                    if r.strip().isdigit()
-                ]
-            except (ValueError, AttributeError):
-                self.rounds_to_display = [1, 2, 3]
-
-        if not self.rounds_to_display:
-            self.rounds_to_display = [1, 2, 3]
-
         # Font settings
         self.font_name = self.config.get("font", "PressStart2P-Regular.ttf")
         self.player_name_font_size = self.config.get("player_name_font_size", 12)
@@ -395,13 +379,12 @@ class NFLDraftPlugin(BasePlugin):
             with urlopen(req, timeout=15) as response:
                 rounds_data = json.loads(response.read().decode())
 
-            # Collect picks from matching rounds directly from the inline items
+            # Collect picks from all rounds in the response
             raw_picks: List[Tuple[int, Dict]] = []
             for item in rounds_data.get("items", []):
                 round_num = item.get("number", 0)
-                if round_num in self.rounds_to_display:
-                    for pick in item.get("picks", []):
-                        raw_picks.append((round_num, pick))
+                for pick in item.get("picks", []):
+                    raw_picks.append((round_num, pick))
 
             self.logger.info(f"Found {len(raw_picks)} picks across configured rounds for {year} draft")
 
@@ -527,10 +510,8 @@ class NFLDraftPlugin(BasePlugin):
             pick_number = raw_pick.get("overall", idx + 1)
             pick_round = raw_pick.get("round", 1)
 
-            # Filter by round
+            # Filter by specific round if requested
             if round_num is not None and pick_round != round_num:
-                continue
-            if pick_round not in self.rounds_to_display:
                 continue
 
             # Get team info
@@ -699,22 +680,27 @@ class NFLDraftPlugin(BasePlugin):
                     content_items.append(img)
 
         elif self.simulate_live:
-            # Simulation: all configured rounds with favorite picks at the front
-            picks_to_display = [p for p in self.draft_picks if p["round"] in self.rounds_to_display]
+            # Simulation: show all picks (completed draft record) with fav picks first
+            for pick in self._get_favorite_team_picks():
+                img = self._create_pick_item(pick)
+                if img:
+                    content_items.append(img)
+
+            for pick in self.draft_picks:
+                img = self._create_pick_item(pick)
+                if img:
+                    content_items.append(img)
+
+        else:
+            # Pre-draft / post-draft: show the most relevant round via _get_display_round()
+            _, round_picks = self._get_display_round()
 
             for pick in self._get_favorite_team_picks():
                 img = self._create_pick_item(pick)
                 if img:
                     content_items.append(img)
 
-            for pick in picks_to_display:
-                img = self._create_pick_item(pick)
-                if img:
-                    content_items.append(img)
-
-        else:
-            # Pre-draft projections: all configured rounds, no extras
-            for pick in [p for p in self.draft_picks if p["round"] in self.rounds_to_display]:
+            for pick in round_picks:
                 img = self._create_pick_item(pick)
                 if img:
                     content_items.append(img)
@@ -1099,20 +1085,25 @@ class NFLDraftPlugin(BasePlugin):
                     images.append(img)
 
         elif self.simulate_live:
-            picks_to_display = [p for p in self.draft_picks if p["round"] in self.rounds_to_display]
+            for pick in self._get_favorite_team_picks():
+                img = self._create_pick_item(pick)
+                if img:
+                    images.append(img)
+
+            for pick in self.draft_picks:
+                img = self._create_pick_item(pick)
+                if img:
+                    images.append(img)
+
+        else:
+            _, round_picks = self._get_display_round()
 
             for pick in self._get_favorite_team_picks():
                 img = self._create_pick_item(pick)
                 if img:
                     images.append(img)
 
-            for pick in picks_to_display:
-                img = self._create_pick_item(pick)
-                if img:
-                    images.append(img)
-
-        else:
-            for pick in [p for p in self.draft_picks if p["round"] in self.rounds_to_display]:
+            for pick in round_picks:
                 img = self._create_pick_item(pick)
                 if img:
                     images.append(img)
@@ -1133,22 +1124,7 @@ class NFLDraftPlugin(BasePlugin):
 
     def validate_config(self) -> bool:
         """Validate plugin configuration."""
-        if not super().validate_config():
-            return False
-
-        # Validate rounds format
-        rounds_str = self.config.get("rounds", "1,2,3")
-        if rounds_str.lower() != "all":
-            try:
-                rounds = [int(r.strip()) for r in rounds_str.split(",")]
-                if not all(1 <= r <= 7 for r in rounds):
-                    self.logger.error("Rounds must be between 1 and 7")
-                    return False
-            except (ValueError, AttributeError):
-                self.logger.error("Invalid rounds format. Use comma-separated numbers or 'all'")
-                return False
-
-        return True
+        return super().validate_config()
 
     def get_info(self) -> Dict[str, Any]:
         """Return plugin info for web UI."""
@@ -1159,7 +1135,6 @@ class NFLDraftPlugin(BasePlugin):
             'draft_status': self.draft_status,
             'current_round': self.current_round,
             'picks_loaded': len(self.draft_picks),
-            'rounds_configured': self.rounds_to_display
         })
         return info
 

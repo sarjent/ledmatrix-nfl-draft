@@ -16,11 +16,6 @@
       "minimum": 10,
       "maximum": 300
     },
-    "rounds": {
-      "type": "string",
-      "description": "Comma-separated list of rounds to display (e.g., '1,2,3' or '1' or 'all')",
-      "default": "1,2,3"
-    },
     "font": {
       "type": "string",
       "description": "Font file name for player names (from assets/fonts/)",
