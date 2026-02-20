@@ -171,6 +171,12 @@ class NFLDraftPlugin(BasePlugin):
         if self.draft_year == 0:
             self.draft_year = self._get_current_draft_year()
 
+        # Simulation settings — override draft_year when active
+        self.simulate_live = self.config.get("simulate_live", False)
+        self.simulate_year = self.config.get("simulate_year", 2025)
+        if self.simulate_live:
+            self.draft_year = self.simulate_year
+
     def _load_font(self, size: int) -> ImageFont.ImageFont:
         """Load configured font at specified size."""
         try:
@@ -312,6 +318,171 @@ class NFLDraftPlugin(BasePlugin):
             self.logger.error(f"Error fetching prospects: {e}", exc_info=True)
 
         return prospects
+
+    def _fetch_nfl_teams(self) -> Dict[str, str]:
+        """
+        Fetch NFL team ID → abbreviation mapping from ESPN site API.
+
+        Returns:
+            Dict mapping team ID string to team abbreviation (e.g. {'10': 'KC'})
+        """
+        cache_key = "nfl_teams_lookup"
+        cached = self.cache_manager.get(cache_key)
+        if cached:
+            return cached
+
+        teams: Dict[str, str] = {}
+        try:
+            url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams?limit=50"
+            req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urlopen(req, timeout=15) as response:
+                data = json.loads(response.read().decode())
+
+            # Response: {"sports": [{"leagues": [{"teams": [...]}]}]}
+            for entry in (data.get("sports", [{}])[0]
+                          .get("leagues", [{}])[0]
+                          .get("teams", [])):
+                team = entry.get("team", {})
+                team_id = str(team.get("id", ""))
+                abbr = team.get("abbreviation", "")
+                if team_id and abbr:
+                    teams[team_id] = abbr
+
+            self.logger.info(f"Fetched {len(teams)} NFL team abbreviations")
+            if teams:
+                self.cache_manager.set(cache_key, teams, ttl=86400)
+
+        except Exception as e:
+            self.logger.error(f"Error fetching NFL teams: {e}")
+
+        return teams
+
+    def _fetch_historical_picks(self) -> List[Dict[str, Any]]:
+        """
+        Fetch completed draft picks from ESPN core API for simulate_live mode.
+
+        Uses the core API (sports.core.api.espn.com) which retains historical
+        draft data with real athlete and team references.  Athlete $ref URLs
+        are resolved in parallel to get player name, position, and college.
+
+        Returns:
+            List of pick dicts in the same format as _fetch_draft_picks()
+        """
+        year = self.simulate_year
+        cache_key = f"nfl_draft_historical_{year}"
+        cached = self.cache_manager.get(cache_key)
+        if cached:
+            self.logger.debug(f"Using cached historical picks for {year}")
+            return cached
+
+        teams_lookup = self._fetch_nfl_teams()
+        picks: List[Dict[str, Any]] = []
+
+        try:
+            # 1. Get round list from core API
+            rounds_url = (
+                f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl"
+                f"/seasons/{year}/draft/rounds?lang=en&region=us&limit=10"
+            )
+            req = Request(rounds_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urlopen(req, timeout=15) as response:
+                rounds_data = json.loads(response.read().decode())
+
+            round_refs = [
+                item.get("$ref") for item in rounds_data.get("items", [])
+                if item.get("$ref")
+            ]
+            self.logger.info(f"Found {len(round_refs)} rounds for {year} draft")
+
+            # 2. Fetch each round in parallel; skip rounds not in rounds_to_display
+            def fetch_round(round_ref_url: str) -> List[Tuple[int, Dict]]:
+                try:
+                    req = Request(round_ref_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urlopen(req, timeout=15) as response:
+                        rdata = json.loads(response.read().decode())
+                    round_num = rdata.get("round", 0)
+                    if round_num not in self.rounds_to_display:
+                        return []
+                    return [(round_num, p) for p in rdata.get("picks", [])]
+                except Exception as e:
+                    self.logger.debug(f"Failed to fetch round {round_ref_url}: {e}")
+                    return []
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=7) as executor:
+                round_results = list(executor.map(fetch_round, round_refs))
+
+            raw_picks: List[Tuple[int, Dict]] = []
+            for result in round_results:
+                raw_picks.extend(result)
+
+            self.logger.info(f"Retrieved {len(raw_picks)} raw picks across configured rounds")
+
+            # 3. Resolve athlete $ref URLs in parallel (index-aligned with raw_picks)
+            athlete_urls = [
+                pick.get("athlete", {}).get("$ref", "") for (_rn, pick) in raw_picks
+            ]
+
+            def fetch_athlete_ref(url: str) -> Optional[Dict]:
+                if not url:
+                    return None
+                try:
+                    req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urlopen(req, timeout=10) as response:
+                        return json.loads(response.read().decode())
+                except Exception as e:
+                    self.logger.debug(f"Failed to fetch athlete ref: {e}")
+                    return None
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+                athlete_results = list(executor.map(fetch_athlete_ref, athlete_urls))
+
+            # 4. Build standardised pick dicts
+            for i, (round_num, raw_pick) in enumerate(raw_picks):
+                athlete = athlete_results[i]
+
+                # Extract team ID from $ref URL last path segment
+                team_ref = raw_pick.get("team", {}).get("$ref", "")
+                team_id = team_ref.rstrip("/").split("/")[-1] if team_ref else ""
+                team_abbr = teams_lookup.get(team_id, "")
+
+                player_name = "TBD"
+                position = ""
+                college = ""
+                if athlete:
+                    player_name = athlete.get("displayName", "TBD")
+                    pos = athlete.get("position", {})
+                    if isinstance(pos, dict):
+                        position = pos.get("abbreviation", "")
+                    college_team = athlete.get("team", {})
+                    if college_team and isinstance(college_team, dict):
+                        college = college_team.get(
+                            "shortDisplayName", college_team.get("name", "")
+                        )
+
+                pick_data: Dict[str, Any] = {
+                    "pick_number": raw_pick.get("overall", i + 1),
+                    "round": round_num,
+                    "round_pick": raw_pick.get("pick", 0),
+                    "team_abbr": team_abbr,
+                    "team_name": "",
+                    "player_name": player_name,
+                    "position": position,
+                    "college": college,
+                }
+
+                if pick_data["team_abbr"] or pick_data["player_name"] != "TBD":
+                    picks.append(pick_data)
+
+            picks.sort(key=lambda x: x.get("pick_number", 0))
+            self.logger.info(f"Fetched {len(picks)} historical picks for {year}")
+
+            if picks:
+                self.cache_manager.set(cache_key, picks, ttl=86400)
+
+        except Exception as e:
+            self.logger.error(f"Error fetching historical picks: {e}", exc_info=True)
+
+        return picks
 
     def _fetch_draft_picks(self, round_num: Optional[int] = None) -> List[Dict[str, Any]]:
         """
@@ -687,12 +858,18 @@ class NFLDraftPlugin(BasePlugin):
         if self.last_update_time is not None and current_time - self.last_update_time < refresh_interval:
             return
 
-        self.logger.info(f"Updating NFL Draft data (live={self.is_draft_live}, year={self.draft_year})")
+        self.logger.info(f"Updating NFL Draft data (live={self.is_draft_live}, year={self.draft_year}, simulate={self.simulate_live})")
 
         try:
-            # Fetch all draft picks - _fetch_draft_picks handles filtering by rounds
-            # and also updates self.is_draft_live and self.current_round from API response
-            self.draft_picks = self._fetch_draft_picks()
+            if self.simulate_live:
+                # Simulation mode: fetch real picks from core API for a completed draft
+                # year and display them as-is (all configured rounds, no live filtering)
+                self.draft_status = "simulate"
+                self.draft_picks = self._fetch_historical_picks()
+            else:
+                # Normal mode: fetch from site API (live or projected picks)
+                # also updates self.is_draft_live and self.current_round from API response
+                self.draft_picks = self._fetch_draft_picks()
 
             # Sort by pick number
             self.draft_picks.sort(key=lambda x: x.get("pick_number", 0))

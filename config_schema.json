@@ -210,6 +210,18 @@
       "description": "Override how this plugin appears in Vegas scroll mode. 'scroll' = individual picks scroll through the stream (default), 'fixed' = entire display scrolls by as one block, 'static' = scroll pauses while plugin displays for its duration.",
       "enum": ["scroll", "fixed", "static"],
       "default": "scroll"
+    },
+    "simulate_live": {
+      "type": "boolean",
+      "description": "When true, fetches real picks from a completed draft (simulate_year) via the ESPN core API and displays them as if the draft were live. Useful for testing or off-season display of actual results.",
+      "default": false
+    },
+    "simulate_year": {
+      "type": "integer",
+      "description": "The draft year to use when simulate_live is enabled. Must be a year with a completed NFL Draft (e.g. 2025).",
+      "default": 2025,
+      "minimum": 2000,
+      "maximum": 2099
     }
   },
   "additionalProperties": false
