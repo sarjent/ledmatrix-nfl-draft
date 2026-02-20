@@ -114,7 +114,7 @@ class NFLDraftPlugin(BasePlugin):
         # Font settings
         self.font_name = self.config.get("font", "PressStart2P-Regular.ttf")
         self.player_name_font_size = self.config.get("player_name_font_size", 12)
-        self.detail_font_size = self.config.get("detail_font_size", 6)
+        self.detail_font_size = self.config.get("detail_font_size", 8)
 
         # Color settings
         player_color = self.config.get("player_name_color", {"r": 255, "g": 255, "b": 255})

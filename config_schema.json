@@ -41,7 +41,7 @@
     "detail_font_size": {
       "type": "integer",
       "description": "Font size for position and pick number",
-      "default": 6,
+      "default": 8,
       "minimum": 4,
       "maximum": 12
     },
