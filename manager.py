@@ -177,6 +177,13 @@ class NFLDraftPlugin(BasePlugin):
         if self.simulate_live:
             self.draft_year = self.simulate_year
 
+        # Favorite teams for live-mode highlights (up to 3 abbreviations)
+        fav_raw = self.config.get("favorite_teams", [])
+        if isinstance(fav_raw, list):
+            self.favorite_teams = [str(t).upper().strip() for t in fav_raw if t][:3]
+        else:
+            self.favorite_teams = []
+
     def _load_font(self, size: int) -> ImageFont.ImageFont:
         """Load configured font at specified size."""
         try:
@@ -604,35 +611,121 @@ class NFLDraftPlugin(BasePlugin):
 
         return draft_start <= now <= draft_end
 
+    def _get_display_round(self) -> Tuple[int, List[Dict[str, Any]]]:
+        """
+        Determine which round to show during a live draft.
+
+        Returns the current round if it has at least one completed selection;
+        otherwise falls back to the highest round that has completed picks.
+        This handles the gap between rounds where current_round has advanced
+        but no selections have been announced yet.
+
+        Returns:
+            (round_number, picks_list)
+        """
+        current_picks = [p for p in self.draft_picks if p.get("round") == self.current_round]
+        current_done = [p for p in current_picks if p.get("player_name", "TBD") != "TBD"]
+
+        if current_done:
+            return self.current_round, current_picks
+
+        # No selections yet in current_round — show last completed round
+        completed_rounds = sorted(
+            {p.get("round", 0) for p in self.draft_picks
+             if p.get("player_name", "TBD") != "TBD"},
+            reverse=True
+        )
+        if completed_rounds:
+            last = completed_rounds[0]
+            return last, [p for p in self.draft_picks if p.get("round") == last]
+
+        return self.current_round, current_picks  # fallback
+
+    def _get_favorite_team_picks(self) -> List[Dict[str, Any]]:
+        """
+        Return the up to 3 most recently made picks from configured favorite teams.
+
+        Only includes picks with real player names (not TBD), sorted by pick
+        number descending so the most recent selection appears first.
+        """
+        if not self.favorite_teams:
+            return []
+        fav = [
+            p for p in self.draft_picks
+            if p.get("team_abbr", "").upper() in self.favorite_teams
+            and p.get("player_name", "TBD") != "TBD"
+        ]
+        fav.sort(key=lambda x: x.get("pick_number", 0), reverse=True)
+        return fav[:3]
+
+    def _create_round_label_item(self, round_num: int) -> Image.Image:
+        """Create a scroll item showing 'ROUND X' as a section header in gold."""
+        text = f"ROUND {round_num}"
+        temp_img = Image.new('RGB', (1, 1))
+        temp_draw = ImageDraw.Draw(temp_img)
+        try:
+            w = int(temp_draw.textlength(text, font=self.player_name_font))
+        except Exception:
+            bbox = temp_draw.textbbox((0, 0), text, font=self.player_name_font)
+            w = bbox[2] - bbox[0]
+        img = Image.new('RGB', (max(w, 1), self.display_height), (0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        y = (self.display_height - self.player_name_font_size) // 2
+        draw.text((0, y), text, font=self.player_name_font, fill=(255, 200, 0))
+        return img
+
     def _create_draft_scroll_image(self) -> None:
         """Create scrolling image with all draft picks."""
         content_items = []
 
-        # Prepend NFL Draft logo as the first scroll item
+        # NFL Draft logo always leads the scroll
         if self.nfl_draft_logo:
             content_items.append(self.nfl_draft_logo)
 
-        # Filter picks by configured rounds
-        picks_to_display = [p for p in self.draft_picks if p["round"] in self.rounds_to_display]
-
-        # During live draft, show only current round
         if self.is_draft_live:
-            picks_to_display = [p for p in self.draft_picks if p["round"] == self.current_round]
+            # Smart round selection: current round if it has selections, else last completed
+            display_round, round_picks = self._get_display_round()
+            content_items.append(self._create_round_label_item(display_round))
 
-        for pick in picks_to_display:
-            item_image = self._create_pick_item(pick)
-            if item_image:
-                content_items.append(item_image)
+            # Favorite team picks — up to 3 most recent, prepended before round picks
+            for pick in self._get_favorite_team_picks():
+                img = self._create_pick_item(pick)
+                if img:
+                    content_items.append(img)
+
+            for pick in round_picks:
+                img = self._create_pick_item(pick)
+                if img:
+                    content_items.append(img)
+
+        elif self.simulate_live:
+            # Simulation: all configured rounds with favorite picks at the front
+            picks_to_display = [p for p in self.draft_picks if p["round"] in self.rounds_to_display]
+
+            for pick in self._get_favorite_team_picks():
+                img = self._create_pick_item(pick)
+                if img:
+                    content_items.append(img)
+
+            for pick in picks_to_display:
+                img = self._create_pick_item(pick)
+                if img:
+                    content_items.append(img)
+
+        else:
+            # Pre-draft projections: all configured rounds, no extras
+            for pick in [p for p in self.draft_picks if p["round"] in self.rounds_to_display]:
+                img = self._create_pick_item(pick)
+                if img:
+                    content_items.append(img)
 
         if content_items:
-            # Create the scrolling image using ScrollHelper
             self.scroll_helper.create_scrolling_image(
                 content_items,
                 item_gap=self.item_gap,
                 element_gap=8
             )
-
-            self.logger.info(f"Created scroll image with {len(content_items)} picks")
+            self.logger.info(f"Created scroll image with {len(content_items)} items")
         else:
             self.logger.warning("No draft picks to display")
 
@@ -986,22 +1079,43 @@ class NFLDraftPlugin(BasePlugin):
         if not self.draft_picks:
             return None
 
-        # Mirror the filtering logic used in _create_draft_scroll_image
-        if self.is_draft_live:
-            picks_to_display = [p for p in self.draft_picks if p["round"] == self.current_round]
-        else:
-            picks_to_display = [p for p in self.draft_picks if p["round"] in self.rounds_to_display]
-
         images = []
 
-        # Prepend NFL Draft logo as the first Vegas item
         if self.nfl_draft_logo:
             images.append(self.nfl_draft_logo)
 
-        for pick in picks_to_display:
-            img = self._create_pick_item(pick)
-            if img:
-                images.append(img)
+        if self.is_draft_live:
+            display_round, round_picks = self._get_display_round()
+            images.append(self._create_round_label_item(display_round))
+
+            for pick in self._get_favorite_team_picks():
+                img = self._create_pick_item(pick)
+                if img:
+                    images.append(img)
+
+            for pick in round_picks:
+                img = self._create_pick_item(pick)
+                if img:
+                    images.append(img)
+
+        elif self.simulate_live:
+            picks_to_display = [p for p in self.draft_picks if p["round"] in self.rounds_to_display]
+
+            for pick in self._get_favorite_team_picks():
+                img = self._create_pick_item(pick)
+                if img:
+                    images.append(img)
+
+            for pick in picks_to_display:
+                img = self._create_pick_item(pick)
+                if img:
+                    images.append(img)
+
+        else:
+            for pick in [p for p in self.draft_picks if p["round"] in self.rounds_to_display]:
+                img = self._create_pick_item(pick)
+                if img:
+                    images.append(img)
 
         return images if images else None
 

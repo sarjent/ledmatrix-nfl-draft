@@ -222,6 +222,15 @@
       "default": 2025,
       "minimum": 2000,
       "maximum": 2099
+    },
+    "favorite_teams": {
+      "type": "array",
+      "description": "Up to 3 NFL team abbreviations (e.g. ['KC', 'SF', 'DAL']). During live and simulate modes their most recent picks (up to 3) are shown at the front of the scroll, after the round label.",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 3,
+      "default": []
     }
   },
   "additionalProperties": false
