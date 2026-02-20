@@ -663,8 +663,8 @@ class NFLDraftPlugin(BasePlugin):
         if self.nfl_draft_logo:
             content_items.append(self.nfl_draft_logo)
 
-        if self.is_draft_live:
-            # Smart round selection: current round if it has selections, else last completed
+        if self.is_draft_live or self.simulate_live:
+            # Live or simulation: show the current/last-completed round with round label
             display_round, round_picks = self._get_display_round()
             content_items.append(self._create_round_label_item(display_round))
 
@@ -675,18 +675,6 @@ class NFLDraftPlugin(BasePlugin):
                     content_items.append(img)
 
             for pick in round_picks:
-                img = self._create_pick_item(pick)
-                if img:
-                    content_items.append(img)
-
-        elif self.simulate_live:
-            # Simulation: show all picks (completed draft record) with fav picks first
-            for pick in self._get_favorite_team_picks():
-                img = self._create_pick_item(pick)
-                if img:
-                    content_items.append(img)
-
-            for pick in self.draft_picks:
                 img = self._create_pick_item(pick)
                 if img:
                     content_items.append(img)
@@ -1070,7 +1058,7 @@ class NFLDraftPlugin(BasePlugin):
         if self.nfl_draft_logo:
             images.append(self.nfl_draft_logo)
 
-        if self.is_draft_live:
+        if self.is_draft_live or self.simulate_live:
             display_round, round_picks = self._get_display_round()
             images.append(self._create_round_label_item(display_round))
 
@@ -1080,17 +1068,6 @@ class NFLDraftPlugin(BasePlugin):
                     images.append(img)
 
             for pick in round_picks:
-                img = self._create_pick_item(pick)
-                if img:
-                    images.append(img)
-
-        elif self.simulate_live:
-            for pick in self._get_favorite_team_picks():
-                img = self._create_pick_item(pick)
-                if img:
-                    images.append(img)
-
-            for pick in self.draft_picks:
                 img = self._create_pick_item(pick)
                 if img:
                     images.append(img)
