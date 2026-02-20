@@ -681,7 +681,13 @@ class NFLDraftPlugin(BasePlugin):
         logo_width = logo.width if logo else 0
 
         # Player name (large font) - top line
-        player_name = pick.get("player_name", "TBD")
+        on_clock = pick.get("on_clock", False)
+        if on_clock:
+            player_name = "On the Clock"
+            name_color = (0, 200, 0)
+        else:
+            player_name = pick.get("player_name", "TBD")
+            name_color = self.player_color
 
         # Build detail line: #PICK  POS  (College)
         detail_parts = []
@@ -746,7 +752,7 @@ class NFLDraftPlugin(BasePlugin):
         detail_y = top_y + self.player_name_font_size + line_gap
 
         # Draw player name (large font, top line)
-        draw.text((text_start_x, player_name_y), player_name, font=self.player_name_font, fill=self.player_color)
+        draw.text((text_start_x, player_name_y), player_name, font=self.player_name_font, fill=name_color)
 
         # Draw detail line (small font, bottom line)
         draw.text((text_start_x, detail_y), detail_text, font=self.detail_font, fill=self.pick_color)
@@ -873,6 +879,17 @@ class NFLDraftPlugin(BasePlugin):
 
             # Sort by pick number
             self.draft_picks.sort(key=lambda x: x.get("pick_number", 0))
+
+            # Mark the "on the clock" pick — first TBD pick in the current round
+            # during a real live draft (not simulation, which has all picks filled in)
+            for pick in self.draft_picks:
+                pick.pop("on_clock", None)  # clear any stale flag
+            if self.is_draft_live and not self.simulate_live:
+                for pick in self.draft_picks:
+                    if (pick.get("player_name") == "TBD"
+                            and pick.get("round") == self.current_round):
+                        pick["on_clock"] = True
+                        break
 
             # Create scroll image
             self._create_draft_scroll_image()
