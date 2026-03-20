@@ -16,6 +16,7 @@ API Version: 1.0.0
 """
 
 import concurrent.futures
+import html
 import logging
 import re
 import time
@@ -360,8 +361,8 @@ class NFLDraftPlugin(BasePlugin):
 
                 pick_number = int(m.group(1))
                 team_abbr = m.group(2).strip().upper()
-                player_name = m.group(3).strip()
-                school_pos = m.group(4).strip()
+                player_name = html.unescape(m.group(3).strip())
+                school_pos = html.unescape(m.group(4).strip())
 
                 parts = school_pos.split("|")
                 position = parts[0].strip() if parts else ""
