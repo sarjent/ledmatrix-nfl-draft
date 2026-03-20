@@ -98,6 +98,9 @@ class NFLDraftPlugin(BasePlugin):
 
         self.logger.info(f"NFL Draft plugin initialized for year {self.draft_year}")
 
+        # Load initial data immediately so content is ready before first display cycle
+        self.update()
+
     def _load_config(self) -> None:
         """Load and parse configuration values."""
         # Font settings
