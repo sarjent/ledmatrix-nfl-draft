@@ -338,7 +338,7 @@ class NFLDraftPlugin(BasePlugin):
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
             )
             with urlopen(req, timeout=30) as response:
-                html = response.read().decode("utf-8", errors="replace")
+                page = response.read().decode("utf-8", errors="replace")
 
             round_label_pattern = re.compile(r'mock-round-label nfl[^>]*>Round (\d+)<')
             row_pattern = re.compile(
@@ -350,12 +350,12 @@ class NFLDraftPlugin(BasePlugin):
                 re.DOTALL
             )
 
-            round_starts = [(m.start(), int(m.group(1))) for m in round_label_pattern.finditer(html)]
+            round_starts = [(m.start(), int(m.group(1))) for m in round_label_pattern.finditer(page)]
 
             round_counters: Dict[int, int] = {}
             current_round = 1
 
-            for m in row_pattern.finditer(html):
+            for m in row_pattern.finditer(page):
                 # Determine round: find the last round label before this pick
                 for rs_pos, rs_round in reversed(round_starts):
                     if rs_pos < m.start():
