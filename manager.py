@@ -990,6 +990,9 @@ class NFLDraftPlugin(BasePlugin):
                 # Normal mode: fetch from site API (live or projected picks)
                 # also updates self.is_draft_live and self.current_round from API response
                 self.draft_picks = self._fetch_draft_picks()
+                # Pre-draft Tankathon mock: limit display to round 1 only
+                if self.draft_status == "pre":
+                    self.draft_picks = [p for p in self.draft_picks if p.get("round") == 1]
 
             # Sort by pick number
             self.draft_picks.sort(key=lambda x: x.get("pick_number", 0))
