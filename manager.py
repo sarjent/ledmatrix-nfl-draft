@@ -17,6 +17,7 @@ API Version: 1.0.0
 
 import concurrent.futures
 import logging
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -49,11 +50,14 @@ class NFLDraftPlugin(BasePlugin):
     """
 
     # ESPN API Endpoints
-    # Site API provides mock draft with team projections (pre-draft)
+    # Site API provides draft status and actual results (live/post-draft)
     ESPN_DRAFT_SITE = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/draft"
     # Core API provides detailed athlete data and actual draft results (post-draft)
     ESPN_DRAFT_CORE = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{year}/draft"
     ESPN_DRAFT_ATHLETES = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{year}/draft/athletes"
+
+    # Tankathon mock draft (pre-draft only)
+    TANKATHON_MOCK_DRAFT = "https://www.tankathon.com/nfl/mock_draft"
 
     def __init__(self, plugin_id: str, config: Dict[str, Any],
                  display_manager, cache_manager, plugin_manager):
@@ -310,6 +314,81 @@ class NFLDraftPlugin(BasePlugin):
 
         return prospects
 
+    def _fetch_tankathon_mock_draft(self) -> List[Dict[str, Any]]:
+        """
+        Fetch pre-draft mock picks from Tankathon.
+
+        Scrapes https://www.tankathon.com/nfl/mock_draft and returns a list of
+        pick dicts in the same format as _fetch_draft_picks().
+        """
+        cache_key = f"tankathon_mock_draft_{self.draft_year}"
+        cached = self.cache_manager.get(cache_key)
+        if cached:
+            self.logger.debug("Using cached Tankathon mock draft data")
+            return cached
+
+        picks = []
+        try:
+            req = Request(
+                self.TANKATHON_MOCK_DRAFT,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            )
+            with urlopen(req, timeout=30) as response:
+                html = response.read().decode("utf-8", errors="replace")
+
+            round_label_pattern = re.compile(r'mock-round-label nfl[^>]*>Round (\d+)<')
+            row_pattern = re.compile(
+                r'<div class="mock-row nfl">'
+                r'<div class="mock-row-pick-number">(\d+)</div>'
+                r'.*?alt="([^"]*)"'
+                r'.*?<div class="mock-row-name">([^<]+)</div>'
+                r'.*?<div class="mock-row-school-position">([^<]+)</div>',
+                re.DOTALL
+            )
+
+            round_starts = [(m.start(), int(m.group(1))) for m in round_label_pattern.finditer(html)]
+
+            round_counters: Dict[int, int] = {}
+            current_round = 1
+
+            for m in row_pattern.finditer(html):
+                # Determine round: find the last round label before this pick
+                for rs_pos, rs_round in reversed(round_starts):
+                    if rs_pos < m.start():
+                        current_round = rs_round
+                        break
+
+                pick_number = int(m.group(1))
+                team_abbr = m.group(2).strip().upper()
+                player_name = m.group(3).strip()
+                school_pos = m.group(4).strip()
+
+                parts = school_pos.split("|")
+                position = parts[0].strip() if parts else ""
+                college = parts[1].strip() if len(parts) > 1 else ""
+
+                round_counters[current_round] = round_counters.get(current_round, 0) + 1
+
+                picks.append({
+                    "pick_number": pick_number,
+                    "round": current_round,
+                    "round_pick": round_counters[current_round],
+                    "team_abbr": team_abbr,
+                    "team_name": "",
+                    "player_name": player_name,
+                    "position": position,
+                    "college": college,
+                })
+
+            self.logger.info(f"Fetched {len(picks)} Tankathon mock draft picks")
+            if picks:
+                self.cache_manager.set(cache_key, picks, ttl=self.projection_refresh_interval)
+
+        except Exception as e:
+            self.logger.error(f"Error fetching Tankathon mock draft: {e}", exc_info=True)
+
+        return picks
+
     def _fetch_nfl_teams(self) -> Dict[str, str]:
         """
         Fetch NFL team ID → abbreviation mapping from ESPN site API.
@@ -500,21 +579,21 @@ class NFLDraftPlugin(BasePlugin):
         raw_picks = data.get("picks", [])
         self.logger.info(f"Found {len(raw_picks)} picks in ESPN response")
 
-        # Get all prospects for mock draft (pre-draft mode)
-        # Fetch from core API to get full prospect list with rankings
-        prospects = self._fetch_all_prospects() if self.draft_status == "pre" else []
-        self.logger.info(f"Found {len(prospects)} prospects for mock draft")
+        # For pre-draft, use Tankathon mock draft directly
+        if self.draft_status == "pre":
+            tankathon_picks = self._fetch_tankathon_mock_draft()
+            if round_num is not None:
+                return [p for p in tankathon_picks if p["round"] == round_num]
+            return tankathon_picks
 
-        # Build picks list
+        # For live/post-draft, build picks list from ESPN actual data
         for idx, raw_pick in enumerate(raw_picks):
             pick_number = raw_pick.get("overall", idx + 1)
             pick_round = raw_pick.get("round", 1)
 
-            # Filter by specific round if requested
             if round_num is not None and pick_round != round_num:
                 continue
 
-            # Get team info
             team_id = str(raw_pick.get("teamId", ""))
             team_info = teams_lookup.get(team_id, {})
 
@@ -529,15 +608,7 @@ class NFLDraftPlugin(BasePlugin):
                 "college": ""
             }
 
-            # For pre-draft, match with prospect by rank
-            if self.draft_status == "pre" and idx < len(prospects):
-                prospect = prospects[idx]
-                pick_data["player_name"] = prospect.get("displayName", "TBD")
-                pick_data["position"] = prospect.get("position", "")
-                pick_data["college"] = prospect.get("college", "")
-
-            # For live/post draft, use athlete data if available
-            elif raw_pick.get("athlete"):
+            if raw_pick.get("athlete"):
                 athlete = raw_pick["athlete"]
                 pick_data["player_name"] = athlete.get("displayName", "TBD")
                 position = athlete.get("position", {})
@@ -547,7 +618,6 @@ class NFLDraftPlugin(BasePlugin):
                 if college_team and isinstance(college_team, dict):
                     pick_data["college"] = college_team.get("shortDisplayName", college_team.get("name", ""))
 
-            # Only add if we have meaningful data
             if pick_data["team_abbr"] or pick_data["player_name"] != "TBD":
                 picks.append(pick_data)
 
