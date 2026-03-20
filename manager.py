@@ -548,26 +548,39 @@ class NFLDraftPlugin(BasePlugin):
 
         data = self._fetch_draft_data()
 
+        # Update draft status from ESPN if we got data
+        if data:
+            status = data.get("status", {})
+            if status:
+                state = status.get("state", "").lower()
+                if state == "in":
+                    self.draft_status = "live"
+                    self.is_draft_live = True
+                elif state == "post":
+                    self.draft_status = "complete"
+                else:
+                    self.draft_status = "pre"
+
+                # Get current round from status
+                current_round = status.get("round", 1)
+                if isinstance(current_round, int):
+                    self.current_round = current_round
+
+        # If ESPN returned nothing or gave no status, assume pre-draft
+        if self.draft_status == "unknown":
+            self.logger.info("No ESPN draft status — defaulting to pre-draft mode")
+            self.draft_status = "pre"
+
+        # For pre-draft, use Tankathon mock draft directly — no ESPN data needed
+        if self.draft_status == "pre":
+            tankathon_picks = self._fetch_tankathon_mock_draft()
+            if round_num is not None:
+                return [p for p in tankathon_picks if p["round"] == round_num]
+            return tankathon_picks
+
         if not data:
             self.logger.warning("No draft data returned from ESPN API")
             return picks
-
-        # Update draft status from the response
-        status = data.get("status", {})
-        if status:
-            state = status.get("state", "").lower()
-            if state == "in":
-                self.draft_status = "live"
-                self.is_draft_live = True
-            elif state == "post":
-                self.draft_status = "complete"
-            else:
-                self.draft_status = "pre"
-
-            # Get current round from status
-            current_round = status.get("round", 1)
-            if isinstance(current_round, int):
-                self.current_round = current_round
 
         # Build team lookup (teamId -> team info)
         teams_lookup = {}
@@ -579,13 +592,6 @@ class NFLDraftPlugin(BasePlugin):
         # Get draft order from picks
         raw_picks = data.get("picks", [])
         self.logger.info(f"Found {len(raw_picks)} picks in ESPN response")
-
-        # For pre-draft, use Tankathon mock draft directly
-        if self.draft_status == "pre":
-            tankathon_picks = self._fetch_tankathon_mock_draft()
-            if round_num is not None:
-                return [p for p in tankathon_picks if p["round"] == round_num]
-            return tankathon_picks
 
         # For live/post-draft, build picks list from ESPN actual data
         for idx, raw_pick in enumerate(raw_picks):
