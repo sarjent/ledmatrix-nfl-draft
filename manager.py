@@ -11,14 +11,13 @@ Features:
 - Configurable rounds, fonts, colors
 - Smooth horizontal scrolling through picks
 - Team logos displayed alongside player names
-
-API Version: 1.0.0
 """
 
 import concurrent.futures
 import html
 import logging
 import re
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -98,8 +97,10 @@ class NFLDraftPlugin(BasePlugin):
 
         self.logger.info(f"NFL Draft plugin initialized for year {self.draft_year}")
 
-        # Load initial data immediately so content is ready before first display cycle
-        self.update()
+        # Kick off the initial data fetch in the background so __init__ returns
+        # immediately. display() calls _display_no_data() until draft_picks is
+        # populated (the existing `if not self.draft_picks` guard handles this).
+        threading.Thread(target=self.update, daemon=True).start()
 
     def _load_config(self) -> None:
         """Load and parse configuration values."""
@@ -269,7 +270,7 @@ class NFLDraftPlugin(BasePlugin):
 
             # Use ThreadPoolExecutor for parallel fetching
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                athlete_data = list(executor.map(fetch_athlete, athlete_urls[:150]))  # Limit to top 150
+                athlete_data = list(executor.map(fetch_athlete, athlete_urls[:64]))  # Limit to top 64
 
             # Process athlete data
             for athlete in athlete_data:
@@ -561,8 +562,10 @@ class NFLDraftPlugin(BasePlugin):
                     self.is_draft_live = True
                 elif state == "post":
                     self.draft_status = "complete"
+                    self.is_draft_live = False
                 else:
                     self.draft_status = "pre"
+                    self.is_draft_live = False
 
                 # Get current round from status
                 current_round = status.get("round", 1)
@@ -573,6 +576,7 @@ class NFLDraftPlugin(BasePlugin):
         if self.draft_status == "unknown":
             self.logger.info("No ESPN draft status — defaulting to pre-draft mode")
             self.draft_status = "pre"
+            self.is_draft_live = False
 
         # For pre-draft, use Tankathon mock draft directly — no ESPN data needed
         if self.draft_status == "pre":
@@ -648,36 +652,6 @@ class NFLDraftPlugin(BasePlugin):
             pick.pop("_athlete_id", None)
 
         return picks
-
-    def _check_draft_live_status(self) -> bool:
-        """
-        Check if the NFL Draft is currently live.
-
-        Uses the site API status field which is updated in _fetch_draft_picks.
-        Falls back to date-based detection.
-
-        Returns:
-            True if draft is live, False otherwise
-        """
-        # First try to get status from site API
-        data = self._fetch_draft_data()
-
-        if data:
-            status = data.get("status", {})
-            if status:
-                state = status.get("state", "").lower()
-                if state == "in":
-                    self.draft_status = "live"
-                    return True
-                elif state == "post":
-                    self.draft_status = "complete"
-                    return False
-                else:
-                    self.draft_status = "pre"
-                    return False
-
-        # Fallback: check by date
-        return self._is_draft_date()
 
     def _is_draft_date(self) -> bool:
         """Check if current date is during NFL Draft (late April)."""
@@ -1020,6 +994,8 @@ class NFLDraftPlugin(BasePlugin):
                 # Simulation mode: fetch real picks from core API for a completed draft
                 # year and display them as-is (all configured rounds, no live filtering)
                 self.draft_status = "simulate"
+                self.is_draft_live = False
+                self.current_round = 1
                 self.draft_picks = self._fetch_historical_picks()
             else:
                 # Normal mode: fetch from site API (live or projected picks)
