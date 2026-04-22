@@ -621,6 +621,7 @@ class NFLDraftPlugin(BasePlugin):
             if raw_pick.get("athlete"):
                 athlete = raw_pick["athlete"]
                 pick_data["player_name"] = athlete.get("displayName", "TBD")
+                pick_data["_athlete_id"] = str(athlete.get("id", ""))
                 position = athlete.get("position", {})
                 if isinstance(position, dict):
                     pick_data["position"] = position.get("abbreviation", "")
@@ -630,6 +631,21 @@ class NFLDraftPlugin(BasePlugin):
 
             if pick_data["team_abbr"] or pick_data["player_name"] != "TBD":
                 picks.append(pick_data)
+
+        # The ESPN site API returns athlete.position as {"id": "8"} with no
+        # abbreviation, and college is in athlete.team (already grabbed above).
+        # Supplement any blank position fields from the prospects cache (core API
+        # athlete details), which does include position abbreviations.
+        if any(not p.get("position") for p in picks):
+            prospects = self._fetch_all_prospects()
+            pos_by_id = {str(p.get("id", "")): p.get("position", "") for p in prospects}
+            for pick in picks:
+                if not pick.get("position"):
+                    pick["position"] = pos_by_id.get(pick.get("_athlete_id", ""), "")
+
+        # Remove the internal tracking key before returning
+        for pick in picks:
+            pick.pop("_athlete_id", None)
 
         return picks
 
@@ -981,8 +997,17 @@ class NFLDraftPlugin(BasePlugin):
         """
         current_time = time.time()
 
-        # Determine refresh interval based on mode
-        refresh_interval = self.live_refresh_interval if self.is_draft_live else self.projection_refresh_interval
+        # Use live_refresh_interval whenever the draft is active or we are
+        # inside the date window (April 20-27) so polling ramps up automatically
+        # on draft day even before ESPN flips state to "in".  Off-season this
+        # returns quickly — the framework calls update() every 5 minutes but the
+        # 24-hour projection_refresh_interval keeps us from hitting the API.
+        in_draft_window = self._is_draft_date()
+        refresh_interval = (
+            self.live_refresh_interval
+            if (self.is_draft_live or in_draft_window)
+            else self.projection_refresh_interval
+        )
 
         # Check if refresh is needed
         if self.last_update_time is not None and current_time - self.last_update_time < refresh_interval:
