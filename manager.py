@@ -83,6 +83,7 @@ class NFLDraftPlugin(BasePlugin):
         self.current_round = 1
         self.last_update_time: Optional[float] = None
         self.last_live_check_time: Optional[float] = None
+        self._state_lock = threading.Lock()
 
         # Font loading - separate sizes for player name vs details
         self.player_name_font = self._load_font(self.player_name_font_size)
@@ -205,7 +206,13 @@ class NFLDraftPlugin(BasePlugin):
         or actual draft results (post-draft).
         """
         cache_key = f"nfl_draft_site_{self.draft_year}"
-        cache_ttl = self.live_refresh_interval if self.is_draft_live else self.projection_refresh_interval
+        # Use live_refresh_interval during draft week regardless of current
+        # is_draft_live state so the live transition is detected within 10 min.
+        cache_ttl = (
+            self.live_refresh_interval
+            if (self.is_draft_live or self._is_draft_date())
+            else self.projection_refresh_interval
+        )
 
         data = self.api_helper.get(
             self.ESPN_DRAFT_SITE,
@@ -608,10 +615,11 @@ class NFLDraftPlugin(BasePlugin):
                     self.draft_status = "pre"
                     self.is_draft_live = False
 
-                # Get current round from status
+                # Get current round from status; clamp to >=1 so downstream
+                # functions (_get_display_round, on-the-clock logic) never see 0.
                 current_round = status.get("round", 1)
                 if isinstance(current_round, int):
-                    self.current_round = current_round
+                    self.current_round = max(1, current_round)
 
         # If ESPN returned nothing or gave no status, assume pre-draft
         if self.draft_status == "unknown":
@@ -697,9 +705,11 @@ class NFLDraftPlugin(BasePlugin):
     def _is_draft_date(self) -> bool:
         """Check if current date is during NFL Draft (late April)."""
         now = datetime.now()
-        # NFL Draft typically occurs last week of April (Thursday-Saturday)
+        # NFL Draft typically occurs last week of April (Thursday-Saturday).
+        # Compare dates so all of April 27 is included (datetime comparisons
+        # against midnight would exclude the rest of that day).
         draft_start = datetime(self.draft_year, 4, 20)
-        draft_end = datetime(self.draft_year, 4, 27)
+        draft_end = datetime(self.draft_year, 4, 27, 23, 59, 59, 999999)
 
         return draft_start <= now <= draft_end
 
@@ -1032,39 +1042,41 @@ class NFLDraftPlugin(BasePlugin):
 
         try:
             if self.simulate_live:
-                # Simulation mode: fetch real picks from core API for a completed draft
-                # year and display them as-is (all configured rounds, no live filtering)
-                self.draft_status = "simulate"
-                self.is_draft_live = False
-                self.current_round = 1
-                self.draft_picks = self._fetch_historical_picks()
+                new_picks = self._fetch_historical_picks()
+                new_status = "simulate"
+                new_live = False
+                new_round = 1
             else:
-                # Normal mode: fetch from site API (live or projected picks)
-                # also updates self.is_draft_live and self.current_round from API response
-                self.draft_picks = self._fetch_draft_picks()
-                # Pre-draft Tankathon mock: limit display to round 1 only
+                new_picks = self._fetch_draft_picks()
                 if self.draft_status == "pre":
-                    self.draft_picks = [p for p in self.draft_picks if p.get("round") == 1]
+                    new_picks = [p for p in new_picks if p.get("round") == 1]
+                new_status = self.draft_status
+                new_live = self.is_draft_live
+                new_round = self.current_round
 
-            # Sort by pick number
-            self.draft_picks.sort(key=lambda x: x.get("pick_number", 0))
+            new_picks.sort(key=lambda x: x.get("pick_number", 0))
 
-            # Mark the "on the clock" pick — first TBD pick in the current round
-            # during a real live draft (not simulation, which has all picks filled in)
-            for pick in self.draft_picks:
-                pick.pop("on_clock", None)  # clear any stale flag
-            if self.is_draft_live and not self.simulate_live:
-                for pick in self.draft_picks:
-                    if (pick.get("player_name") == "TBD"
-                            and pick.get("round") == self.current_round):
+            for pick in new_picks:
+                pick.pop("on_clock", None)
+            if new_live and not self.simulate_live:
+                for pick in new_picks:
+                    if pick.get("player_name") == "TBD" and pick.get("round") == new_round:
                         pick["on_clock"] = True
                         break
 
-            # Create scroll image
+            # Build the scroll image before acquiring the lock so rendering
+            # doesn't block display() for longer than a list swap.
+            self.draft_picks = new_picks
             self._create_draft_scroll_image()
 
+            with self._state_lock:
+                self.draft_status = new_status
+                self.is_draft_live = new_live
+                self.current_round = new_round
+                self.draft_picks = new_picks
+
             self.last_update_time = current_time
-            self.logger.info(f"Loaded {len(self.draft_picks)} draft picks")
+            self.logger.info(f"Loaded {len(new_picks)} draft picks")
 
         except Exception as e:
             self.logger.error(f"Error updating draft data: {e}", exc_info=True)
@@ -1081,7 +1093,10 @@ class NFLDraftPlugin(BasePlugin):
         if force_clear:
             self.display_manager.clear()
 
-        if not self.draft_picks:
+        with self._state_lock:
+            picks_loaded = bool(self.draft_picks)
+
+        if not picks_loaded:
             self._display_no_data()
             return
 
@@ -1175,7 +1190,11 @@ class NFLDraftPlugin(BasePlugin):
         giving smoother integration than handing it the pre-built scroll image.
         Returns None if no picks are loaded yet.
         """
-        if not self.draft_picks:
+        with self._state_lock:
+            picks = list(self.draft_picks)
+            is_live = self.is_draft_live
+
+        if not picks:
             return None
 
         images = []
@@ -1183,7 +1202,7 @@ class NFLDraftPlugin(BasePlugin):
         if self.nfl_draft_logo:
             images.append(self.nfl_draft_logo)
 
-        if self.is_draft_live or self.simulate_live:
+        if is_live or self.simulate_live:
             display_round, round_picks = self._get_display_round()
             images.append(self._create_round_label_item(display_round))
 
