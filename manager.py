@@ -336,7 +336,13 @@ class NFLDraftPlugin(BasePlugin):
         try:
             req = Request(
                 self.TANKATHON_MOCK_DRAFT,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Referer": "https://www.tankathon.com/",
+                    "Connection": "keep-alive",
+                }
             )
             with urlopen(req, timeout=30) as response:
                 page = response.read().decode("utf-8", errors="replace")
@@ -392,6 +398,41 @@ class NFLDraftPlugin(BasePlugin):
         except Exception as e:
             self.logger.error(f"Error fetching Tankathon mock draft: {e}", exc_info=True)
 
+        if not picks:
+            picks = self._fetch_espn_predraft_order()
+
+        return picks
+
+    def _fetch_espn_predraft_order(self) -> List[Dict[str, Any]]:
+        """
+        Fallback: build a Round 1 pick list from ESPN's pre-draft order.
+
+        ESPN pre-draft picks have team assignments but no player names yet.
+        Used when Tankathon is unreachable so the display shows the draft
+        order rather than nothing.
+        """
+        picks = []
+        try:
+            data = self._fetch_draft_data()
+            teams_lookup = {str(t.get("id")): t for t in data.get("teams", [])}
+            round1 = [p for p in data.get("picks", []) if p.get("round") == 1]
+            for raw in round1:
+                team_id = str(raw.get("teamId", ""))
+                team_info = teams_lookup.get(team_id, {})
+                picks.append({
+                    "pick_number": raw.get("overall", 0),
+                    "round": 1,
+                    "round_pick": raw.get("pick", 0),
+                    "team_abbr": team_info.get("abbreviation", ""),
+                    "team_name": team_info.get("displayName", ""),
+                    "player_name": "TBD",
+                    "position": "",
+                    "college": "",
+                })
+            if picks:
+                self.logger.info(f"ESPN pre-draft fallback: {len(picks)} Round 1 picks (player names TBD)")
+        except Exception as e:
+            self.logger.error(f"Error fetching ESPN pre-draft fallback: {e}")
         return picks
 
     def _fetch_nfl_teams(self) -> Dict[str, str]:
