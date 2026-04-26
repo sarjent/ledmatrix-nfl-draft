@@ -815,8 +815,8 @@ class NFLDraftPlugin(BasePlugin):
         if self.nfl_draft_logo:
             content_items.append(self.nfl_draft_logo)
 
-        if self.is_draft_live or self.simulate_live:
-            # Live or simulation: show the current/last-completed round with round label
+        if self.is_draft_live:
+            # Live only: show the current/last-completed round with round label
             display_round, round_picks = self._get_display_round()
             content_items.append(self._create_round_label_item(display_round))
 
@@ -831,8 +831,8 @@ class NFLDraftPlugin(BasePlugin):
                 if img:
                     content_items.append(img)
 
-        elif self.draft_status == "complete":
-            if not self._is_post_draft_window():
+        elif self.draft_status == "complete" or self.simulate_live:
+            if self.draft_status == "complete" and not self._is_post_draft_window():
                 return  # Window expired — leave scroll helper empty
             show = self.post_draft_show
             if show in ("favorites", "both"):
@@ -1117,16 +1117,15 @@ class NFLDraftPlugin(BasePlugin):
                         pick["on_clock"] = True
                         break
 
-            # Build the scroll image before acquiring the lock so rendering
-            # doesn't block display() for longer than a list swap.
-            self.draft_picks = new_picks
-            self._create_draft_scroll_image()
-
             with self._state_lock:
                 self.draft_status = new_status
                 self.is_draft_live = new_live
                 self.current_round = new_round
                 self.draft_picks = new_picks
+
+            # Build scroll image after the lock so _create_draft_scroll_image
+            # reads a fully consistent state snapshot.
+            self._create_draft_scroll_image()
 
             self.last_update_time = current_time
             self.logger.info(f"Loaded {len(new_picks)} draft picks")
@@ -1154,7 +1153,7 @@ class NFLDraftPlugin(BasePlugin):
         if status == "complete" and not self._is_post_draft_window():
             self._display_blank()
             return
-        if status not in ("live", "complete") and self._is_off_season():
+        if status not in ("live", "complete", "simulate") and self._is_off_season():
             self._display_blank()
             return
 
@@ -1269,7 +1268,7 @@ class NFLDraftPlugin(BasePlugin):
         # Off-season / expired post-draft window: drop out of rotation entirely
         if status == "complete" and not self._is_post_draft_window():
             return None
-        if status not in ("live", "complete") and self._is_off_season():
+        if status not in ("live", "complete", "simulate") and self._is_off_season():
             return None
 
         images = []
@@ -1277,7 +1276,7 @@ class NFLDraftPlugin(BasePlugin):
         if self.nfl_draft_logo:
             images.append(self.nfl_draft_logo)
 
-        if is_live or self.simulate_live:
+        if is_live:
             display_round, round_picks = self._get_display_round()
             images.append(self._create_round_label_item(display_round))
 
@@ -1291,7 +1290,7 @@ class NFLDraftPlugin(BasePlugin):
                 if img:
                     images.append(img)
 
-        elif status == "complete":
+        elif status == "complete" or self.simulate_live:
             show = self.post_draft_show
             if show in ("favorites", "both"):
                 for pick in self._get_favorite_team_picks(limit=None, ascending=True):
