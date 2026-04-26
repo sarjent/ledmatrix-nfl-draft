@@ -807,65 +807,82 @@ class NFLDraftPlugin(BasePlugin):
         draw.text((0, y), text, font=self.player_name_font, fill=(255, 200, 0))
         return img
 
-    def _create_draft_scroll_image(self) -> None:
-        """Create scrolling image with all draft picks."""
-        content_items = []
+    def _build_content_items(self, picks: Optional[List[Dict[str, Any]]] = None) -> List[Image.Image]:
+        """
+        Build the ordered list of scroll images for the current draft state.
 
-        # NFL Draft logo always leads the scroll
+        Args:
+            picks: Pick snapshot to use for round filtering. Defaults to
+                   self.draft_picks when not supplied (e.g. called from
+                   _create_draft_scroll_image after the state lock is released).
+
+        Returns:
+            List of PIL Images ready for the scroll stream. Empty when there is
+            nothing to display for the current state.
+        """
+        if picks is None:
+            picks = self.draft_picks
+
+        items: List[Image.Image] = []
+
         if self.nfl_draft_logo:
-            content_items.append(self.nfl_draft_logo)
+            items.append(self.nfl_draft_logo)
 
         if self.is_draft_live:
-            # Live only: show the current/last-completed round with round label
             display_round, round_picks = self._get_display_round()
-            content_items.append(self._create_round_label_item(display_round))
-
-            # Favorite team picks — up to 3 most recent, prepended before round picks
+            items.append(self._create_round_label_item(display_round))
             for pick in self._get_favorite_team_picks():
                 img = self._create_pick_item(pick)
                 if img:
-                    content_items.append(img)
-
+                    items.append(img)
             for pick in round_picks:
                 img = self._create_pick_item(pick)
                 if img:
-                    content_items.append(img)
+                    items.append(img)
 
         elif self.draft_status == "complete" or self.simulate_live:
-            if self.draft_status == "complete" and not self._is_post_draft_window():
-                return  # Window expired — leave scroll helper empty
             show = self.post_draft_show
             if show in ("favorites", "both"):
                 for pick in self._get_favorite_team_picks(limit=None, ascending=True):
                     img = self._create_pick_item(pick)
                     if img:
-                        content_items.append(img)
+                        items.append(img)
             if show in ("rounds", "both"):
                 for rnd in range(1, self.display_rounds + 1):
                     round_picks = [
-                        p for p in self.draft_picks
+                        p for p in picks
                         if p.get("round") == rnd and p.get("player_name", "TBD") != "TBD"
                     ]
                     if round_picks:
-                        content_items.append(self._create_round_label_item(rnd))
+                        items.append(self._create_round_label_item(rnd))
                         for pick in round_picks:
                             img = self._create_pick_item(pick)
                             if img:
-                                content_items.append(img)
+                                items.append(img)
 
         else:
-            # Pre-draft: show Round 1 mock picks — silent during off-season
-            if self._is_off_season():
-                return
+            # Pre-draft
             _, round_picks = self._get_display_round()
             for pick in self._get_favorite_team_picks():
                 img = self._create_pick_item(pick)
                 if img:
-                    content_items.append(img)
+                    items.append(img)
             for pick in round_picks:
                 img = self._create_pick_item(pick)
                 if img:
-                    content_items.append(img)
+                    items.append(img)
+
+        return items
+
+    def _create_draft_scroll_image(self) -> None:
+        """Create scrolling image with all draft picks."""
+        # Silent modes: leave scroll helper unchanged so the previous frame persists
+        if self.draft_status == "complete" and not self._is_post_draft_window():
+            return
+        if self.draft_status not in ("live", "complete", "simulate") and self._is_off_season():
+            return
+
+        content_items = self._build_content_items()
 
         if content_items:
             self.scroll_helper.create_scrolling_image(
@@ -1259,7 +1276,6 @@ class NFLDraftPlugin(BasePlugin):
         """
         with self._state_lock:
             picks = list(self.draft_picks)
-            is_live = self.is_draft_live
             status = self.draft_status
 
         if not picks:
@@ -1271,57 +1287,7 @@ class NFLDraftPlugin(BasePlugin):
         if status not in ("live", "complete", "simulate") and self._is_off_season():
             return None
 
-        images = []
-
-        if self.nfl_draft_logo:
-            images.append(self.nfl_draft_logo)
-
-        if is_live:
-            display_round, round_picks = self._get_display_round()
-            images.append(self._create_round_label_item(display_round))
-
-            for pick in self._get_favorite_team_picks():
-                img = self._create_pick_item(pick)
-                if img:
-                    images.append(img)
-
-            for pick in round_picks:
-                img = self._create_pick_item(pick)
-                if img:
-                    images.append(img)
-
-        elif status == "complete" or self.simulate_live:
-            show = self.post_draft_show
-            if show in ("favorites", "both"):
-                for pick in self._get_favorite_team_picks(limit=None, ascending=True):
-                    img = self._create_pick_item(pick)
-                    if img:
-                        images.append(img)
-            if show in ("rounds", "both"):
-                for rnd in range(1, self.display_rounds + 1):
-                    round_picks = [
-                        p for p in picks
-                        if p.get("round") == rnd and p.get("player_name", "TBD") != "TBD"
-                    ]
-                    if round_picks:
-                        images.append(self._create_round_label_item(rnd))
-                        for pick in round_picks:
-                            img = self._create_pick_item(pick)
-                            if img:
-                                images.append(img)
-
-        else:
-            # Pre-draft (off-season already filtered above)
-            _, round_picks = self._get_display_round()
-            for pick in self._get_favorite_team_picks():
-                img = self._create_pick_item(pick)
-                if img:
-                    images.append(img)
-            for pick in round_picks:
-                img = self._create_pick_item(pick)
-                if img:
-                    images.append(img)
-
+        images = self._build_content_items(picks=picks)
         return images if images else None
 
     def has_live_priority(self) -> bool:
