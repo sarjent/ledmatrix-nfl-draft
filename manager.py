@@ -707,23 +707,30 @@ class NFLDraftPlugin(BasePlugin):
 
         return picks
 
-    def _is_draft_date(self) -> bool:
-        """Check if current date is during NFL Draft (late April)."""
-        now = datetime.now()
-        # NFL Draft typically occurs last week of April (Thursday-Saturday).
-        # Compare dates so all of April 27 is included (datetime comparisons
-        # against midnight would exclude the rest of that day).
-        draft_start = datetime(self.draft_year, 4, 20)
-        draft_end = datetime(self.draft_year, 4, 27, 23, 59, 59, 999999)
+    def _get_draft_end_date(self) -> datetime:
+        """Return the last Saturday of April for draft_year — the day the draft ends.
 
-        return draft_start <= now <= draft_end
+        The NFL Draft always concludes on a Saturday in late April. ESPN does not
+        expose the exact event end date, so we compute it: find the last Saturday
+        of April by working backwards from April 30.
+        """
+        last_april = datetime(self.draft_year, 4, 30)
+        # weekday(): 0=Mon … 5=Sat 6=Sun
+        days_back = (last_april.weekday() - 5) % 7
+        end_day = last_april - timedelta(days=days_back)
+        return end_day.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+    def _is_draft_date(self) -> bool:
+        """Check if current date is during NFL Draft week (late April)."""
+        now = datetime.now()
+        draft_start = datetime(self.draft_year, 4, 20)
+        return draft_start <= now <= self._get_draft_end_date()
 
     def _is_post_draft_window(self) -> bool:
         """True if the draft just completed and we are within the post_draft_days window."""
         if self.draft_status != "complete":
             return False
-        draft_end = datetime(self.draft_year, 4, 27, 23, 59, 59, 999999)
-        window_end = draft_end + timedelta(days=self.post_draft_days)
+        window_end = self._get_draft_end_date() + timedelta(days=self.post_draft_days)
         return datetime.now() <= window_end
 
     def _is_off_season(self) -> bool:
