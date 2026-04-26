@@ -19,7 +19,7 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from urllib.request import urlopen, Request
@@ -177,6 +177,10 @@ class NFLDraftPlugin(BasePlugin):
             self.favorite_teams = [str(t).upper().strip() for t in fav_raw if t][:3]
         else:
             self.favorite_teams = []
+
+        # Post-draft display settings
+        self.display_rounds = self.config.get("display_rounds", 3)
+        self.post_draft_days = self.config.get("post_draft_days", 7)
 
     def _load_font(self, size: int) -> ImageFont.ImageFont:
         """Load configured font at specified size."""
@@ -713,6 +717,24 @@ class NFLDraftPlugin(BasePlugin):
 
         return draft_start <= now <= draft_end
 
+    def _is_post_draft_window(self) -> bool:
+        """True if the draft just completed and we are within the post_draft_days window."""
+        if self.draft_status != "complete":
+            return False
+        draft_end = datetime(self.draft_year, 4, 27, 23, 59, 59, 999999)
+        window_end = draft_end + timedelta(days=self.post_draft_days)
+        return datetime.now() <= window_end
+
+    def _is_off_season(self) -> bool:
+        """True during the NFL off-season (May through January).
+
+        The Super Bowl always falls in February, so months 5-12 and 1 are
+        treated as off-season silence. Pre-draft Tankathon mode resumes in
+        February once the Super Bowl has cleared.
+        """
+        month = datetime.now().month
+        return month >= 5 or month == 1
+
     def _get_display_round(self) -> Tuple[int, List[Dict[str, Any]]]:
         """
         Determine which round to show during a live draft.
@@ -743,12 +765,13 @@ class NFLDraftPlugin(BasePlugin):
 
         return self.current_round, current_picks  # fallback
 
-    def _get_favorite_team_picks(self) -> List[Dict[str, Any]]:
+    def _get_favorite_team_picks(self, limit: Optional[int] = 3, ascending: bool = False) -> List[Dict[str, Any]]:
         """
-        Return the up to 3 most recently made picks from configured favorite teams.
+        Return picks from configured favorite teams with real player names.
 
-        Only includes picks with real player names (not TBD), sorted by pick
-        number descending so the most recent selection appears first.
+        Args:
+            limit: Max picks to return; None returns all.
+            ascending: Sort by pick number ascending (post-draft recap order).
         """
         if not self.favorite_teams:
             return []
@@ -757,8 +780,8 @@ class NFLDraftPlugin(BasePlugin):
             if p.get("team_abbr", "").upper() in self.favorite_teams
             and p.get("player_name", "TBD") != "TBD"
         ]
-        fav.sort(key=lambda x: x.get("pick_number", 0), reverse=True)
-        return fav[:3]
+        fav.sort(key=lambda x: x.get("pick_number", 0), reverse=not ascending)
+        return fav if limit is None else fav[:limit]
 
     def _create_round_label_item(self, round_num: int) -> Image.Image:
         """Create a scroll item showing 'ROUND X' as a section header in gold."""
@@ -800,15 +823,35 @@ class NFLDraftPlugin(BasePlugin):
                 if img:
                     content_items.append(img)
 
-        else:
-            # Pre-draft / post-draft: show the most relevant round via _get_display_round()
-            _, round_picks = self._get_display_round()
+        elif self.draft_status == "complete":
+            if not self._is_post_draft_window():
+                return  # Window expired — leave scroll helper empty
+            # Post-draft window: all fav team picks (in pick order) then rounds 1-N
+            for pick in self._get_favorite_team_picks(limit=None, ascending=True):
+                img = self._create_pick_item(pick)
+                if img:
+                    content_items.append(img)
+            for rnd in range(1, self.display_rounds + 1):
+                round_picks = [
+                    p for p in self.draft_picks
+                    if p.get("round") == rnd and p.get("player_name", "TBD") != "TBD"
+                ]
+                if round_picks:
+                    content_items.append(self._create_round_label_item(rnd))
+                    for pick in round_picks:
+                        img = self._create_pick_item(pick)
+                        if img:
+                            content_items.append(img)
 
+        else:
+            # Pre-draft: show Round 1 mock picks — silent during off-season
+            if self._is_off_season():
+                return
+            _, round_picks = self._get_display_round()
             for pick in self._get_favorite_team_picks():
                 img = self._create_pick_item(pick)
                 if img:
                     content_items.append(img)
-
             for pick in round_picks:
                 img = self._create_pick_item(pick)
                 if img:
@@ -1095,6 +1138,15 @@ class NFLDraftPlugin(BasePlugin):
 
         with self._state_lock:
             picks_loaded = bool(self.draft_picks)
+            status = self.draft_status
+
+        # Off-season / expired post-draft window: render nothing
+        if status == "complete" and not self._is_post_draft_window():
+            self._display_blank()
+            return
+        if status not in ("live", "complete") and self._is_off_season():
+            self._display_blank()
+            return
 
         if not picks_loaded:
             self._display_no_data()
@@ -1115,6 +1167,12 @@ class NFLDraftPlugin(BasePlugin):
         except Exception as e:
             self.logger.error(f"Error displaying draft: {e}")
             self._display_error()
+
+    def _display_blank(self) -> None:
+        """Render a solid black frame (off-season silence — no text, no errors)."""
+        img = Image.new('RGB', (self.display_width, self.display_height), (0, 0, 0))
+        self.display_manager.image = img
+        self.display_manager.update_display()
 
     def _display_no_data(self) -> None:
         """Display a no data message."""
@@ -1193,8 +1251,15 @@ class NFLDraftPlugin(BasePlugin):
         with self._state_lock:
             picks = list(self.draft_picks)
             is_live = self.is_draft_live
+            status = self.draft_status
 
         if not picks:
+            return None
+
+        # Off-season / expired post-draft window: drop out of rotation entirely
+        if status == "complete" and not self._is_post_draft_window():
+            return None
+        if status not in ("live", "complete") and self._is_off_season():
             return None
 
         images = []
@@ -1216,14 +1281,31 @@ class NFLDraftPlugin(BasePlugin):
                 if img:
                     images.append(img)
 
-        else:
-            _, round_picks = self._get_display_round()
+        elif status == "complete":
+            # Post-draft window: all fav team picks then rounds 1-N
+            for pick in self._get_favorite_team_picks(limit=None, ascending=True):
+                img = self._create_pick_item(pick)
+                if img:
+                    images.append(img)
+            for rnd in range(1, self.display_rounds + 1):
+                round_picks = [
+                    p for p in picks
+                    if p.get("round") == rnd and p.get("player_name", "TBD") != "TBD"
+                ]
+                if round_picks:
+                    images.append(self._create_round_label_item(rnd))
+                    for pick in round_picks:
+                        img = self._create_pick_item(pick)
+                        if img:
+                            images.append(img)
 
+        else:
+            # Pre-draft (off-season already filtered above)
+            _, round_picks = self._get_display_round()
             for pick in self._get_favorite_team_picks():
                 img = self._create_pick_item(pick)
                 if img:
                     images.append(img)
-
             for pick in round_picks:
                 img = self._create_pick_item(pick)
                 if img:
