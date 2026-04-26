@@ -220,12 +220,26 @@
     },
     "favorite_teams": {
       "type": "array",
-      "description": "Up to 3 NFL team abbreviations (e.g. ['KC', 'SF', 'DAL']). During live and simulate modes their most recent picks (up to 3) are shown at the front of the scroll, after the round label.",
+      "description": "Up to 3 NFL team abbreviations (e.g. ['KC', 'SF', 'DAL']). During live mode their 3 most recent picks appear at the front of the scroll. Post-draft, all picks for each team are shown in round order before the per-round sections.",
       "items": {
         "type": "string"
       },
       "maxItems": 3,
       "default": []
+    },
+    "display_rounds": {
+      "type": "integer",
+      "description": "Number of rounds to display during the post-draft window (1 = first round only, 7 = all rounds). Defaults to 3.",
+      "default": 3,
+      "minimum": 1,
+      "maximum": 7
+    },
+    "post_draft_days": {
+      "type": "integer",
+      "description": "Number of days after the draft ends (April 27) to keep showing results. After this window the plugin goes silent until the following February.",
+      "default": 7,
+      "minimum": 1,
+      "maximum": 30
     }
   },
   "additionalProperties": false
