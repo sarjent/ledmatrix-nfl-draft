@@ -181,6 +181,7 @@ class NFLDraftPlugin(BasePlugin):
         # Post-draft display settings
         self.display_rounds = self.config.get("display_rounds", 3)
         self.post_draft_days = self.config.get("post_draft_days", 7)
+        self.post_draft_show = self.config.get("post_draft_show", "both")
 
     def _load_font(self, size: int) -> ImageFont.ImageFont:
         """Load configured font at specified size."""
@@ -826,22 +827,24 @@ class NFLDraftPlugin(BasePlugin):
         elif self.draft_status == "complete":
             if not self._is_post_draft_window():
                 return  # Window expired — leave scroll helper empty
-            # Post-draft window: all fav team picks (in pick order) then rounds 1-N
-            for pick in self._get_favorite_team_picks(limit=None, ascending=True):
-                img = self._create_pick_item(pick)
-                if img:
-                    content_items.append(img)
-            for rnd in range(1, self.display_rounds + 1):
-                round_picks = [
-                    p for p in self.draft_picks
-                    if p.get("round") == rnd and p.get("player_name", "TBD") != "TBD"
-                ]
-                if round_picks:
-                    content_items.append(self._create_round_label_item(rnd))
-                    for pick in round_picks:
-                        img = self._create_pick_item(pick)
-                        if img:
-                            content_items.append(img)
+            show = self.post_draft_show
+            if show in ("favorites", "both"):
+                for pick in self._get_favorite_team_picks(limit=None, ascending=True):
+                    img = self._create_pick_item(pick)
+                    if img:
+                        content_items.append(img)
+            if show in ("rounds", "both"):
+                for rnd in range(1, self.display_rounds + 1):
+                    round_picks = [
+                        p for p in self.draft_picks
+                        if p.get("round") == rnd and p.get("player_name", "TBD") != "TBD"
+                    ]
+                    if round_picks:
+                        content_items.append(self._create_round_label_item(rnd))
+                        for pick in round_picks:
+                            img = self._create_pick_item(pick)
+                            if img:
+                                content_items.append(img)
 
         else:
             # Pre-draft: show Round 1 mock picks — silent during off-season
@@ -1282,22 +1285,24 @@ class NFLDraftPlugin(BasePlugin):
                     images.append(img)
 
         elif status == "complete":
-            # Post-draft window: all fav team picks then rounds 1-N
-            for pick in self._get_favorite_team_picks(limit=None, ascending=True):
-                img = self._create_pick_item(pick)
-                if img:
-                    images.append(img)
-            for rnd in range(1, self.display_rounds + 1):
-                round_picks = [
-                    p for p in picks
-                    if p.get("round") == rnd and p.get("player_name", "TBD") != "TBD"
-                ]
-                if round_picks:
-                    images.append(self._create_round_label_item(rnd))
-                    for pick in round_picks:
-                        img = self._create_pick_item(pick)
-                        if img:
-                            images.append(img)
+            show = self.post_draft_show
+            if show in ("favorites", "both"):
+                for pick in self._get_favorite_team_picks(limit=None, ascending=True):
+                    img = self._create_pick_item(pick)
+                    if img:
+                        images.append(img)
+            if show in ("rounds", "both"):
+                for rnd in range(1, self.display_rounds + 1):
+                    round_picks = [
+                        p for p in picks
+                        if p.get("round") == rnd and p.get("player_name", "TBD") != "TBD"
+                    ]
+                    if round_picks:
+                        images.append(self._create_round_label_item(rnd))
+                        for pick in round_picks:
+                            img = self._create_pick_item(pick)
+                            if img:
+                                images.append(img)
 
         else:
             # Pre-draft (off-season already filtered above)

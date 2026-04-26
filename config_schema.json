@@ -227,9 +227,15 @@
       "maxItems": 3,
       "default": []
     },
+    "post_draft_show": {
+      "type": "string",
+      "description": "What to display during the post-draft window. 'favorites' = only picks for your favorite teams, 'rounds' = per-round results for all teams, 'both' = favorite team picks followed by per-round results.",
+      "enum": ["favorites", "rounds", "both"],
+      "default": "both"
+    },
     "display_rounds": {
       "type": "integer",
-      "description": "Number of rounds to display during the post-draft window (1 = first round only, 7 = all rounds). Defaults to 3.",
+      "description": "Number of rounds to display during the post-draft window (1 = first round only, 7 = all rounds). Only applies when post_draft_show is 'rounds' or 'both'.",
       "default": 3,
       "minimum": 1,
       "maximum": 7
