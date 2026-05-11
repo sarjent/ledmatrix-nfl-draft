@@ -1337,7 +1337,7 @@ class NFLDraftPlugin(BasePlugin):
 
     def get_live_modes(self) -> List[str]:
         """Return display modes for live content."""
-        return ["nfl_draft"]
+        return ["nfl_draft_ticker"]
 
     def validate_config(self) -> bool:
         """Validate plugin configuration."""

@@ -1,21 +1,22 @@
 {
-  "id": "nfl-draft",
-  "name": "NFL Draft",
-  "version": "1.4.1",
+  "id": "nfl-draft-ticker",
+  "name": "NFL Draft Ticker",
+  "version": "1.4.2",
   "author": "sarjent",
-  "description": "Displays projected NFL draft picks from ESPN with live draft tracking support during the annual NFL Draft event. Includes simulate_live mode to replay a completed draft using real ESPN core API data. Shows team logos, player names, positions, and pick numbers in a scrolling display.",
+  "description": "Displays projected and live NFL Draft Ticker picks from ESPN with live draft tracking support during the annual NFL Draft event. Includes simulate_live mode to replay a completed draft using real ESPN core API data. Shows team logos, player names, positions, and pick numbers in a scrolling display.",
   "entry_point": "manager.py",
   "class_name": "NFLDraftPlugin",
   "category": "sports",
   "tags": [
     "nfl",
     "draft",
+    "ticker",
     "football",
     "sports",
     "espn"
   ],
   "display_modes": [
-    "nfl_draft"
+    "nfl_draft_ticker"
   ],
   "update_interval": 300,
   "default_duration": 60,
@@ -24,6 +25,11 @@
   ],
   "icon": "fas fa-football-ball",
   "versions": [
+    {
+      "version": "1.4.2",
+      "released": "2026-05-11",
+      "ledmatrix_min": "2.0.0"
+    },
     {
       "version": "1.4.1",
       "released": "2026-05-11",
@@ -86,7 +92,7 @@
     {
       "name": "ESPN API",
       "required": true,
-      "description": "ESPN public API for draft data (no API key required)",
+      "description": "ESPN public API for NFL Draft Ticker data (no API key required)",
       "url": "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/"
     }
   ],
