@@ -197,11 +197,21 @@ class NFLDraftPlugin(BasePlugin):
     def _get_current_draft_year(self) -> int:
         """Determine the current/upcoming draft year."""
         now = datetime.now()
-        # If before May, show current year's draft
-        # If May or later, show next year's draft
-        if now.month < 5:
-            return now.year
-        return now.year + 1
+        year = now.year
+        # Stay on the current year's draft until its post-draft window has closed.
+        # Using a hard month cutoff (< 5) would flip to next year on May 1 — before
+        # the window expires — causing _is_post_draft_window() to compute dates for
+        # the wrong year. Instead, compute the actual window end and advance only
+        # after it has passed.
+        post_draft_days = self.config.get("post_draft_days", 7)
+        last_april = datetime(year, 4, 30)
+        days_back = (last_april.weekday() - 5) % 7
+        draft_end = (last_april - timedelta(days=days_back)).replace(
+            hour=23, minute=59, second=59, microsecond=999999
+        )
+        if now > draft_end + timedelta(days=post_draft_days):
+            return year + 1
+        return year
 
     def _fetch_draft_data(self) -> Dict[str, Any]:
         """
@@ -726,12 +736,29 @@ class NFLDraftPlugin(BasePlugin):
         draft_start = datetime(self.draft_year, 4, 20)
         return draft_start <= now <= self._get_draft_end_date()
 
-    def _is_post_draft_window(self) -> bool:
-        """True if the draft just completed and we are within the post_draft_days window."""
-        if self.draft_status != "complete":
+    def _is_post_draft_window(self, status: Optional[str] = None) -> bool:
+        """True if the draft just completed and we are within the post_draft_days window.
+
+        Pass the already-locked status snapshot when calling from display() or
+        get_vegas_content() so we never re-read self.draft_status across a
+        thread boundary.
+        """
+        check_status = status if status is not None else self.draft_status
+        if check_status != "complete":
             return False
-        window_end = self._get_draft_end_date() + timedelta(days=self.post_draft_days)
-        return datetime.now() <= window_end
+        # Use the current calendar year, not self.draft_year — the ESPN site API
+        # has no year parameter and always returns the most recent draft as
+        # "complete", but draft_year may have already rolled to next season by May,
+        # which would make _get_draft_end_date() return next April and push the
+        # window_end a full year into the future.
+        now = datetime.now()
+        last_april = datetime(now.year, 4, 30)
+        days_back = (last_april.weekday() - 5) % 7
+        draft_end = (last_april - timedelta(days=days_back)).replace(
+            hour=23, minute=59, second=59, microsecond=999999
+        )
+        window_end = draft_end + timedelta(days=self.post_draft_days)
+        return now <= window_end
 
     def _is_off_season(self) -> bool:
         """True during the NFL off-season (May through January).
@@ -823,22 +850,19 @@ class NFLDraftPlugin(BasePlugin):
         if picks is None:
             picks = self.draft_picks
 
-        items: List[Image.Image] = []
-
-        if self.nfl_draft_logo:
-            items.append(self.nfl_draft_logo)
+        content: List[Image.Image] = []
 
         if self.is_draft_live:
             display_round, round_picks = self._get_display_round()
-            items.append(self._create_round_label_item(display_round))
+            content.append(self._create_round_label_item(display_round))
             for pick in self._get_favorite_team_picks():
                 img = self._create_pick_item(pick)
                 if img:
-                    items.append(img)
+                    content.append(img)
             for pick in round_picks:
                 img = self._create_pick_item(pick)
                 if img:
-                    items.append(img)
+                    content.append(img)
 
         elif self.draft_status == "complete" or self.simulate_live:
             show = self.post_draft_show
@@ -846,7 +870,7 @@ class NFLDraftPlugin(BasePlugin):
                 for pick in self._get_favorite_team_picks(limit=None, ascending=True):
                     img = self._create_pick_item(pick)
                     if img:
-                        items.append(img)
+                        content.append(img)
             if show in ("rounds", "both"):
                 for rnd in range(1, self.display_rounds + 1):
                     round_picks = [
@@ -854,11 +878,11 @@ class NFLDraftPlugin(BasePlugin):
                         if p.get("round") == rnd and p.get("player_name", "TBD") != "TBD"
                     ]
                     if round_picks:
-                        items.append(self._create_round_label_item(rnd))
+                        content.append(self._create_round_label_item(rnd))
                         for pick in round_picks:
                             img = self._create_pick_item(pick)
                             if img:
-                                items.append(img)
+                                content.append(img)
 
         else:
             # Pre-draft
@@ -866,20 +890,33 @@ class NFLDraftPlugin(BasePlugin):
             for pick in self._get_favorite_team_picks():
                 img = self._create_pick_item(pick)
                 if img:
-                    items.append(img)
+                    content.append(img)
             for pick in round_picks:
                 img = self._create_pick_item(pick)
                 if img:
-                    items.append(img)
+                    content.append(img)
 
+        if not content:
+            return []
+
+        # Prepend logo only when there are actual pick items to follow it
+        items: List[Image.Image] = []
+        if self.nfl_draft_logo:
+            items.append(self.nfl_draft_logo)
+        items.extend(content)
         return items
 
     def _create_draft_scroll_image(self) -> None:
         """Create scrolling image with all draft picks."""
-        # Silent modes: leave scroll helper unchanged so the previous frame persists
-        if self.draft_status == "complete" and not self._is_post_draft_window():
+        # Snapshot status once so both guards see the same value
+        status = self.draft_status
+        # Silent modes: clear the scroll cache so Vegas mode's scroll_helper
+        # fallback doesn't resurrect the old draft-picks image.
+        if status == "complete" and not self._is_post_draft_window(status):
+            self.scroll_helper.clear_cache()
             return
-        if self.draft_status not in ("live", "complete", "simulate") and self._is_off_season():
+        if status not in ("live", "complete", "simulate") and self._is_off_season():
+            self.scroll_helper.clear_cache()
             return
 
         content_items = self._build_content_items()
@@ -1167,7 +1204,7 @@ class NFLDraftPlugin(BasePlugin):
             status = self.draft_status
 
         # Off-season / expired post-draft window: render nothing
-        if status == "complete" and not self._is_post_draft_window():
+        if status == "complete" and not self._is_post_draft_window(status):
             self._display_blank()
             return
         if status not in ("live", "complete", "simulate") and self._is_off_season():
@@ -1282,7 +1319,7 @@ class NFLDraftPlugin(BasePlugin):
             return None
 
         # Off-season / expired post-draft window: drop out of rotation entirely
-        if status == "complete" and not self._is_post_draft_window():
+        if status == "complete" and not self._is_post_draft_window(status):
             return None
         if status not in ("live", "complete", "simulate") and self._is_off_season():
             return None
