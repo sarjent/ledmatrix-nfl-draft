@@ -90,6 +90,7 @@ class NFLDraftPlugin(BasePlugin):
         self.injuries_data: List[Dict[str, Any]] = []
         self.last_leaders_update: Optional[float] = None
         self.last_injuries_update: Optional[float] = None
+        self.leaders_week_live: bool = False
 
         # Font loading - separate sizes for player name vs details
         self.player_name_font = self._load_font(self.player_name_font_size)
@@ -197,6 +198,9 @@ class NFLDraftPlugin(BasePlugin):
         _raw_types = self.config.get("leaders_stat_types", ["passing", "rushing", "receiving"])
         self.leaders_stat_types = [_stat_map[t] for t in _raw_types if t in _stat_map]
         self.leaders_refresh_interval = self.config.get("leaders_refresh_interval", 3600)
+        # Used instead of leaders_refresh_interval whenever no game in the
+        # current week is live - no need to poll hourly between weeks.
+        self.leaders_idle_refresh_interval = self.config.get("leaders_idle_refresh_interval", 21600)
 
         # Injuries mode settings
         self.injury_positions = self.config.get("injury_positions", ["QB", "RB", "WR", "TE", "K"])
@@ -1242,19 +1246,29 @@ class NFLDraftPlugin(BasePlugin):
     def _fetch_weekly_leaders(self) -> List[Dict[str, Any]]:
         """Fetch NFL game stat leaders from ESPN scoreboard."""
         season_year, week = self._get_leaders_url_params()
-        week_tag = str(week) if week else "current"
-        cache_key = f"nfl_leaders_{season_year}_{week_tag}"
+        now = datetime.now()
 
         # During the active season refresh more aggressively
-        now = datetime.now()
         cache_ttl = self.leaders_refresh_interval if now.month not in range(9, 13) else 300
 
-        url = (
-            f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
-            f"?seasontype=2&dates={season_year}"
-        )
         if week:
-            url += f"&week={week}"
+            # Off-season recap: an explicit prior-season week - dates=<year>
+            # combined with an explicit week resolves correctly here.
+            cache_key = f"nfl_leaders_{season_year}_{week}"
+            url = (
+                f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+                f"?seasontype=2&dates={season_year}&week={week}"
+            )
+        else:
+            # In-season: let ESPN resolve the live current week from today's actual
+            # date, same pattern used everywhere else in this codebase
+            # (vegassportsticker, LEDMatrix managers). A bare year in `dates`
+            # (e.g. "dates=2026") does NOT reliably mean "today" - it was
+            # resolving to the tail end of the *previous* season (week 18)
+            # instead of the live current week.
+            date_str = now.strftime("%Y%m%d")
+            cache_key = f"nfl_leaders_{date_str}"
+            url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates={date_str}"
 
         data = self.api_helper.get(url, cache_key=cache_key, cache_ttl=cache_ttl)
         if not data:
@@ -1262,6 +1276,23 @@ class NFLDraftPlugin(BasePlugin):
 
         leaders: List[Dict[str, Any]] = []
         week_label = ""
+
+        # Prefer the response's own top-level week/season fields (authoritative
+        # for the live-resolved week) over scanning individual events.
+        top_week = data.get("week", {})
+        if isinstance(top_week, dict) and top_week.get("number"):
+            week_label = f"WK{top_week['number']}"
+        top_season = data.get("season", {})
+        if isinstance(top_season, dict) and top_season.get("year"):
+            season_year = top_season["year"]
+
+        # Drives _update_leaders()'s refresh cadence: poll hourly while any
+        # game this week is live, back off once the week is over or hasn't
+        # started yet.
+        self.leaders_week_live = any(
+            event.get("status", {}).get("type", {}).get("state") == "in"
+            for event in data.get("events", [])
+        )
 
         for event in data.get("events", []):
             if not week_label:
@@ -1272,6 +1303,17 @@ class NFLDraftPlugin(BasePlugin):
                         week_label = f"WK{num}"
 
             for competition in event.get("competitions", []):
+                # Build team-id → abbreviation lookup from the competitors block.
+                # The leaders array often only carries {"id": "12"} without abbreviation,
+                # so we resolve it from the full competitor team objects.
+                team_id_to_abbr: Dict[str, str] = {}
+                for comp in competition.get("competitors", []):
+                    t = comp.get("team", {})
+                    tid = str(t.get("id", ""))
+                    abbr = t.get("abbreviation", "")
+                    if tid and abbr:
+                        team_id_to_abbr[tid] = abbr
+
                 for group in competition.get("leaders", []):
                     stat_name = group.get("name", "")
                     if stat_name not in self.leaders_stat_types:
@@ -1291,10 +1333,20 @@ class NFLDraftPlugin(BasePlugin):
                         pos_obj = athlete.get("position", {})
                         position = pos_obj.get("abbreviation", "") if isinstance(pos_obj, dict) else ""
 
+                        # Resolve team abbreviation: try direct field, then competitor
+                        # lookup by team id, then athlete's own team reference.
+                        team_abbr = team.get("abbreviation", "")
+                        if not team_abbr:
+                            team_abbr = team_id_to_abbr.get(str(team.get("id", "")), "")
+                        if not team_abbr:
+                            ath_team = athlete.get("team", {})
+                            team_abbr = ath_team.get("abbreviation", "") or \
+                                team_id_to_abbr.get(str(ath_team.get("id", "")), "")
+
                         leaders.append({
                             "name": name,
                             "position": position,
-                            "team_abbr": team.get("abbreviation", ""),
+                            "team_abbr": team_abbr,
                             "stat_line": entry.get("displayValue", ""),
                             "stat_value": float(entry.get("value", 0)),
                             "stat_type": stat_name,
@@ -1602,8 +1654,12 @@ class NFLDraftPlugin(BasePlugin):
     def _update_leaders(self) -> None:
         """Fetch leaders data and rebuild scroll image."""
         current_time = time.time()
+        # Poll hourly (leaders_refresh_interval) while this week's games are
+        # live; back off to leaders_idle_refresh_interval once the week has
+        # concluded or before it starts - based on what the last fetch saw.
+        refresh_interval = self.leaders_refresh_interval if self.leaders_week_live else self.leaders_idle_refresh_interval
         if (self.last_leaders_update is not None
-                and current_time - self.last_leaders_update < self.leaders_refresh_interval):
+                and current_time - self.last_leaders_update < refresh_interval):
             return
 
         if not self._is_leaders_season_active():
@@ -1650,6 +1706,17 @@ class NFLDraftPlugin(BasePlugin):
         """
         current_time = time.time()
 
+        # Leaders/injuries refresh on their own cadence - each self-throttles
+        # via last_leaders_update/last_injuries_update - so this runs on every
+        # update() call rather than being gated by the draft-picks refresh
+        # below. That gate previously blocked leaders behind a 24h off-season
+        # throttle, making leaders_refresh_interval (hourly) dead code outside
+        # the draft window.
+        if self._is_leaders_season_active():
+            self._update_leaders()
+        if self._is_leaders_active():
+            self._update_injuries()
+
         # Use live_refresh_interval whenever the draft is active or we are
         # inside the date window (April 20-27) so polling ramps up automatically
         # on draft day even before ESPN flips state to "in".  Off-season this
@@ -1665,12 +1732,6 @@ class NFLDraftPlugin(BasePlugin):
         # Check if refresh is needed
         if self.last_update_time is not None and current_time - self.last_update_time < refresh_interval:
             return
-
-        # Refresh leaders only during the season; injuries year-round when active
-        if self._is_leaders_season_active():
-            self._update_leaders()
-        if self._is_leaders_active():
-            self._update_injuries()
 
         self.logger.info(f"Updating NFL Draft data (live={self.is_draft_live}, year={self.draft_year}, simulate={self.simulate_live})")
 
